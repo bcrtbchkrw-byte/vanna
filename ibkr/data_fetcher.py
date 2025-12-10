@@ -216,19 +216,13 @@ class IBKRDataFetcher:
     
     async def get_option_greeks(
         self,
-        symbol: str,
-        expiry: str,
-        strike: float,
-        right: str  # 'C' or 'P'
+        contract: Contract
     ) -> Optional[Dict[str, float]]:
         """
         Get Greeks for a specific option.
         
         Args:
-            symbol: Underlying symbol
-            expiry: Expiration YYYYMMDD
-            strike: Strike price
-            right: 'C' for call, 'P' for put
+            contract: Option contract
         
         Returns:
             Dict with delta, gamma, theta, vega, impliedVol
@@ -240,34 +234,175 @@ class IBKRDataFetcher:
             return None
         
         try:
-            option = Option(symbol, expiry, strike, right, 'SMART')
-            await conn.ib.qualifyContractsAsync(option)
+            await conn.ib.qualifyContractsAsync(contract)
             
-            ticker = conn.ib.reqMktData(option, '', False, False)
+            # 106 = Option Implied Vol, 101 = Open Interest
+            ticker = conn.ib.reqMktData(contract, '101,106', False, False)
             await asyncio.sleep(2)
             
             greeks = ticker.modelGreeks or ticker.lastGreeks
             
+            # Extract Open Interest safely
+            # ib_insync populates callOpenInterest/putOpenInterest based on the contract right? 
+            # Or simplified: try to get any non-zero, non-None OI value
+            raw_oi = 0
+            if ticker.callOpenInterest and ticker.callOpenInterest > 0:
+                raw_oi = ticker.callOpenInterest
+            elif ticker.putOpenInterest and ticker.putOpenInterest > 0:
+                raw_oi = ticker.putOpenInterest
+            
+            # Handle potential nan (e.g. from nan + number)
+            import math
+            if hasattr(raw_oi, 'real') and math.isnan(raw_oi):
+                 raw_oi = 0
+
             if greeks:
                 result = {
                     "delta": greeks.delta,
                     "gamma": greeks.gamma,
                     "theta": greeks.theta,
                     "vega": greeks.vega,
-                    "impliedVol": greeks.impliedVol
+                    "impliedVol": greeks.impliedVol,
+                    
+                    # Also include price data for liquidity check
+                    "bid": ticker.bid,
+                    "ask": ticker.ask,
+                    "volume": ticker.volume if ticker.volume else 0,
+                    "open_interest": int(raw_oi)
                 }
-                logger.info(f"Greeks {symbol} {expiry} {strike}{right}: "
+                
+                logger.info(f"Greeks {contract.localSymbol}: "
                            f"Δ={result['delta']:.3f}, Θ={result['theta']:.3f}, "
                            f"V={result['vega']:.3f}")
             else:
-                result = None
-                logger.warning(f"No Greeks available for {symbol} {strike}{right}")
+                # Even if no Greeks, return price data if available (for liquidity check)
+                result = {
+                    "delta": 0, "gamma": 0, "theta": 0, "vega": 0, "impliedVol": 0,
+                    "bid": ticker.bid,
+                    "ask": ticker.ask,
+                    "volume": ticker.volume if ticker.volume else 0,
+                    "open_interest": int(raw_oi)
+                }
+                logger.warning(f"No Greeks available for {contract.localSymbol}, returning price data")
             
-            conn.ib.cancelMktData(option)
+            conn.ib.cancelMktData(contract)
             return result
+
             
         except Exception as e:
             logger.error(f"Error fetching Greeks: {e}")
+            return None
+
+
+    
+    # =========================================================================
+    # Fundamental Data
+    # =========================================================================
+    
+    async def get_earnings_date(self, symbol: str) -> Optional[datetime]:
+        """
+        Get next earnings date from IBKR fundamental data
+        
+        Uses IBKR's CalendarReport with rate limiting to avoid pacing violations.
+        IBKR limit: ~60 fundamental data requests per 10 minutes.
+        
+        Args:
+            symbol: Stock ticker
+            
+        Returns:
+            Next earnings datetime or None
+        """
+        try:
+            conn = await self._get_connection()
+            
+            if not conn.is_connected:
+                logger.error("Not connected to IBKR")
+                return None
+            
+            # Create stock contract
+            stock = Stock(symbol, 'SMART', 'USD')
+            await conn.ib.qualifyContractsAsync(stock)
+            
+            # Request fundamental data with retry logic for pacing violations
+            logger.debug(f"Fetching earnings calendar for {symbol} from IBKR...")
+            
+            max_retries = 3
+            retry_delay = 5  # Start with 5 seconds
+            
+            calendar_xml = None
+            
+            for attempt in range(max_retries):
+                try:
+                    # Add small delay to avoid pacing violations (error 162)
+                    if attempt > 0:
+                        logger.info(f"Retry {attempt}/{max_retries} for {symbol} after {retry_delay}s")
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    
+                    calendar_xml = await conn.ib.reqFundamentalDataAsync(
+                        stock,
+                        'CalendarReport'  # Contains earnings dates
+                    )
+                    
+                    # Success - break retry loop
+                    break
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    
+                    # Check for pacing violation (error 162)
+                    if '162' in error_msg or 'pacing' in error_msg.lower():
+                        logger.warning(
+                            f"IBKR pacing violation for {symbol} (attempt {attempt+1}/{max_retries}). "
+                            f"Waiting {retry_delay}s..."
+                        )
+                        if attempt == max_retries - 1:
+                            logger.error(f"Failed to get earnings for {symbol} after {max_retries} retries")
+                            return None
+                        continue
+                    else:
+                        # Different error - log and return None (don't crash app)
+                        logger.warning(f"Error fetching fundamental data: {e}")
+                        return None
+            
+            if not calendar_xml:
+                logger.debug(f"No calendar data for {symbol}")
+                return None
+            
+            # Parse XML to get earnings date
+            from xml.etree import ElementTree as ET
+            
+            root = ET.fromstring(calendar_xml)
+            
+            # Look for earnings announcement date
+            # XML structure: <CalendarReport><EarningsDate>...</EarningsDate></CalendarReport>
+            earnings_elements = root.findall('.//EarningsDate')
+            
+            if not earnings_elements:
+                # Try alternative path
+                earnings_elements = root.findall('.//Event[@Type="Earnings"]')
+            
+            if earnings_elements:
+                # Get the first (next) earnings date
+                earnings_date_str = earnings_elements[0].text
+                
+                if earnings_date_str:
+                    # Parse date (format varies, try common formats)
+                    for fmt in ['%Y-%m-%d', '%Y%m%d', '%m/%d/%Y']:
+                        try:
+                            earnings_date = datetime.strptime(earnings_date_str.strip(), fmt)
+                            # Logic to ensure we don't return past earnings
+                            # But usually CalendarReport returns upcoming events or recent past
+                            logger.info(f"📅 {symbol} next earnings: {earnings_date.strftime('%Y-%m-%d')}")
+                            return earnings_date
+                        except ValueError:
+                            continue
+            
+            logger.debug(f"No earnings date found in calendar for {symbol}")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error fetching earnings from IBKR for {symbol}: {e}")
             return None
 
 
@@ -283,3 +418,4 @@ def get_data_fetcher() -> IBKRDataFetcher:
         _data_fetcher = IBKRDataFetcher()
     
     return _data_fetcher
+

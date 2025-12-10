@@ -45,6 +45,13 @@ class TradingConfig:
 
 
 @dataclass
+class LiquidityConfig:
+    """Liquidity check settings."""
+    max_bid_ask_spread: float
+    min_volume_oi_ratio: float
+
+
+@dataclass
 class LogConfig:
     """Logging settings."""
     level: str
@@ -99,6 +106,11 @@ class Config:
             paper_trading=os.getenv('PAPER_TRADING', 'true').lower() == 'true',
             earnings_blackout_hours=int(os.getenv('EARNINGS_BLACKOUT_HOURS', '48')),
             vix_panic_threshold=float(os.getenv('VIX_PANIC_THRESHOLD', '30')),
+        )
+
+        self.liquidity = LiquidityConfig(
+            max_bid_ask_spread=float(os.getenv('MAX_BID_ASK_SPREAD', '0.50')),
+            min_volume_oi_ratio=float(os.getenv('MIN_VOLUME_OI_RATIO', '1.0')),
         )
         
         self.log = LogConfig(
