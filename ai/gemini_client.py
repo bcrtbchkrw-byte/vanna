@@ -42,8 +42,8 @@ class GeminiClient:
         else:
             genai.configure(api_key=self.api_key)
             
-        # Use 2.5 Flash for speed/cost
-        self.model = genai.GenerativeModel('gemini-2.5-flash')
+        # Use Gemini 3 Pro (Preview) as requested
+        self.model = genai.GenerativeModel('gemini-3-pro-preview')
         
         # Cost tracking
         self.daily_limit_usd = config.ai.daily_cost_limit
@@ -53,7 +53,7 @@ class GeminiClient:
         self.daily_cost = 0.0
         self.silent_mode = False
         
-        logger.info(f"✅ Gemini client initialized (Model: 2.5-Flash, Limit: ${self.daily_limit_usd:.2f})")
+        logger.info(f"✅ Gemini client initialized (Model: 3-Pro-Preview, Limit: ${self.daily_limit_usd:.2f})")
     
     async def analyze_fundamental(
         self,
