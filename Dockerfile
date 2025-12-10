@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (tzdata for ib_insync)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     tzdata \
@@ -18,5 +18,5 @@ COPY . .
 # Create logs directory
 RUN mkdir -p logs
 
-# Default command
+# Command to run (overridden by docker-compose)
 CMD ["python", "main.py"]

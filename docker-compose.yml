@@ -1,31 +1,24 @@
 services:
   # ==========================================================================
   # IB Gateway Container
-  # Using HOST NETWORK to avoid TrustedIPs issues and properly persist settings
   # ==========================================================================
   ib-gateway:
     image: ghcr.io/gnzsnz/ib-gateway:latest
     container_name: ib-gateway
     restart: unless-stopped
     network_mode: host
+    env_file:
+      - .env
     environment:
       - TWS_USERID=${IBKR_USERNAME}
       - TWS_PASSWORD=${IBKR_PASSWORD}
       - TRADING_MODE=${TRADING_MODE:-paper}
       - VNC_SERVER_PASSWORD=${VNC_PASSWORD:-password}
-      - TWOFA_TIMEOUT_ACTION=restart
       - READ_ONLY_API=no
-      # Critical: Persist settings to a specific path to avoid overwriting app files
       - TWS_SETTINGS_PATH=/home/ibgateway/tws_settings
+    # Persist settings to a specific path to avoid overwriting app files
     volumes:
-      # Mount settings to the path defined in TWS_SETTINGS_PATH
       - ./tws_settings:/home/ibgateway/tws_settings
-    healthcheck:
-      test: [ "CMD-SHELL", "bash -c 'timeout 1 bash -c \"</dev/tcp/127.0.0.1/4002\"'" ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 120s
 
   # ==========================================================================
   # Vanna Trader Container
@@ -38,13 +31,11 @@ services:
     restart: unless-stopped
     network_mode: host
     depends_on:
-      ib-gateway:
-        condition: service_healthy
+      - ib-gateway
     environment:
-      # Connect to localhost:4002 (since network_mode: host)
       - IBKR_HOST=127.0.0.1
       - IBKR_PORT=4002
-      - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-1}
+      - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-999}
       - IBKR_ACCOUNT=${IBKR_ACCOUNT}
       # AI
       - GEMINI_API_KEY=${GEMINI_API_KEY}

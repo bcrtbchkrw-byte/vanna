@@ -19,11 +19,11 @@ class IBKRConfig:
     """IBKR connection settings."""
     host: str
     port: int
-    client_id: int
     account: str
     username: str
     password: str
     trading_mode: str
+    client_id: int = 999
 
 
 @dataclass

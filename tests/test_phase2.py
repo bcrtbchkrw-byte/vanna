@@ -17,8 +17,11 @@ import asyncio
 import sys
 import os
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import nest_asyncio
+nest_asyncio.apply()
+
+# Add project root to path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 async def test_connection():
@@ -43,8 +46,10 @@ async def test_account_info(conn):
     print("Testing account info...", end=" ")
     
     try:
-        summary = conn.get_account_summary()
-        
+        from core.logger import get_logger
+        logger = get_logger()
+        summary = await conn.get_account_summary()
+        logger.info(f"   Account Summary: {summary}")
         assert 'NetLiquidation' in summary, "Missing NetLiquidation"
         assert summary['NetLiquidation'] > 0, "Invalid NetLiquidation"
         

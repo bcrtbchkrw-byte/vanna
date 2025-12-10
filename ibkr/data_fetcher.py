@@ -58,7 +58,7 @@ class IBKRDataFetcher:
         
         try:
             contract = Stock(symbol, 'SMART', 'USD')
-            conn.ib.qualifyContracts(contract)
+            await conn.ib.qualifyContractsAsync(contract)
             
             ticker = conn.ib.reqMktData(contract, '', False, False)
             await asyncio.sleep(2)  # Wait for data
@@ -103,7 +103,7 @@ class IBKRDataFetcher:
         
         try:
             vix = Index('VIX', 'CBOE')
-            conn.ib.qualifyContracts(vix)
+            await conn.ib.qualifyContractsAsync(vix)
             
             ticker = conn.ib.reqMktData(vix, '', False, False)
             await asyncio.sleep(2)
@@ -153,7 +153,7 @@ class IBKRDataFetcher:
         try:
             # Get underlying stock
             stock = Stock(symbol, 'SMART', 'USD')
-            conn.ib.qualifyContracts(stock)
+            await conn.ib.qualifyContractsAsync(stock)
             
             # Get current price
             ticker = conn.ib.reqMktData(stock, '', False, False)
@@ -241,7 +241,7 @@ class IBKRDataFetcher:
         
         try:
             option = Option(symbol, expiry, strike, right, 'SMART')
-            conn.ib.qualifyContracts(option)
+            await conn.ib.qualifyContractsAsync(option)
             
             ticker = conn.ib.reqMktData(option, '', False, False)
             await asyncio.sleep(2)

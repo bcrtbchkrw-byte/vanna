@@ -86,14 +86,12 @@ class IBKRConnection:
                 logger.info(f"🔌 Connecting to IBKR (Attempt {attempt}/{self._max_retries})...")
                 logger.info(f"   Target: {self.host}:{self.port} (Client ID: {self.client_id})")
                 
-                await asyncio.wait_for(
-                    self._ib.connectAsync(
-                        host=self.host,
-                        port=self.port,
-                        clientId=self.client_id,
-                        readonly=False
-                    ),
-                    timeout=30
+                await self._ib.connectAsync(
+                    host=self.host,
+                    port=self.port,
+                    clientId=self.client_id,
+                    timeout=30,
+                    readonly=False
                 )
                 
                 # Verify connection
@@ -165,7 +163,7 @@ class IBKRConnection:
     # Account Methods
     # =========================================================================
     
-    def get_account_summary(self) -> dict:
+    async def get_account_summary(self) -> dict:
         """
         Get account summary.
         
@@ -176,7 +174,7 @@ class IBKRConnection:
             raise RuntimeError("Not connected to IBKR")
         
         summary = {}
-        account_values = self.ib.accountSummary(self.account)
+        account_values = await self.ib.accountSummaryAsync(self.account)
         
         for av in account_values:
             if av.tag in ['NetLiquidation', 'AvailableFunds', 'BuyingPower', 
