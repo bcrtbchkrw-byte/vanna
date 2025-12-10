@@ -1,0 +1,69 @@
+services:
+  # ==========================================================================
+  # IB Gateway Container
+  # ==========================================================================
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:latest
+    container_name: ib-gateway
+    restart: unless-stopped
+    ports:
+      - "4001:4001" # Live API
+      - "4002:4002" # Paper API
+      - "5900:5900" # VNC
+    environment:
+      - TWS_USERID=${IBKR_USERNAME}
+      - TWS_PASSWORD=${IBKR_PASSWORD}
+      - TRADING_MODE=${TRADING_MODE:-paper}
+      - VNC_SERVER_PASSWORD=${VNC_PASSWORD:-password}
+      - TWOFA_TIMEOUT_ACTION=restart
+      - READ_ONLY_API=no
+    volumes:
+      - ib-gateway-data:/home/ibgateway/Jts
+    healthcheck:
+      test: [ "CMD-SHELL", "nc -z localhost 4002 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - vanna-network
+
+  # ==========================================================================
+  # Vanna Trader Container
+  # ==========================================================================
+  trader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vanna-trader
+    restart: unless-stopped
+    depends_on:
+      ib-gateway:
+        condition: service_healthy
+    environment:
+      # IBKR
+      - IBKR_HOST=ib-gateway
+      - IBKR_PORT=4002
+      - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-1}
+      - IBKR_ACCOUNT=${IBKR_ACCOUNT}
+      # AI
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Trading
+      - MAX_RISK_PER_TRADE=${MAX_RISK_PER_TRADE:-120}
+      - MAX_ALLOCATION_PERCENT=${MAX_ALLOCATION_PERCENT:-25}
+      - PAPER_TRADING=${PAPER_TRADING:-true}
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    networks:
+      - vanna-network
+
+networks:
+  vanna-network:
+    driver: bridge
+
+volumes:
+  ib-gateway-data:
