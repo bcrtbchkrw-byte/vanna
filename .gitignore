@@ -46,3 +46,4 @@ build/
 # Secrets
 *.pem
 *.key
+tws_settings/
