@@ -3,10 +3,11 @@ Feature Engineering Module
 
 Transforms raw market data into ML-ready features.
 """
-import pandas as pd
+from typing import Any, Dict, List
+
 import numpy as np
-from typing import Dict, Any, List
-from loguru import logger
+import pandas as pd
+
 
 class FeatureEngineer:
     """

@@ -10,8 +10,9 @@ Tests:
 Run: python tests/test_phase3.py
 """
 import asyncio
-import sys
 import os
+import sys
+
 import nest_asyncio
 
 nest_asyncio.apply()
@@ -19,8 +20,8 @@ nest_asyncio.apply()
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loguru import logger
-from core.logger import setup_logger
+from core.logger import setup_logger  # noqa: E402
+
 
 async def test_vix():
     print("\n--- Testing VIX Monitor ---")
@@ -57,9 +58,10 @@ async def test_earnings(symbol_safe, symbol_risky):
 
 async def test_liquidity():
     print("\n--- Testing Liquidity Checker ---")
+    from ib_insync import Option, Stock
+
     from analysis.liquidity import get_liquidity_checker
     from ibkr.data_fetcher import get_data_fetcher
-    from ib_insync import Stock, Option
     
     fetcher = get_data_fetcher()
     checker = get_liquidity_checker()

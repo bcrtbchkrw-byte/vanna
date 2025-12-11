@@ -2,8 +2,8 @@
 AI Prompt Templates
 Structured prompts for Gemini and Claude AI analysis.
 """
-from typing import Dict, Any, Optional
 from datetime import datetime
+from typing import Any, Dict, Optional, cast
 
 
 def get_gemini_fundamental_prompt(
@@ -317,7 +317,7 @@ def parse_gemini_response(response_text: str) -> Dict[str, Any]:
         clean_text = response_text.replace('```json', '').replace('```', '').strip()
         parsed = json.loads(clean_text)
         parsed['raw_response'] = response_text
-        return parsed
+        return cast(Dict[str, Any], parsed)
     except json.JSONDecodeError:
         return {
             'raw_response': response_text,
@@ -345,7 +345,7 @@ def parse_claude_response(response_text: str) -> Dict[str, Any]:
             
         parsed = json.loads(clean_text)
         parsed['raw_response'] = response_text
-        return parsed
+        return cast(Dict[str, Any], parsed)
     except json.JSONDecodeError:
         return {
             'raw_response': response_text,

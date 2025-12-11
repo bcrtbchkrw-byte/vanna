@@ -8,16 +8,16 @@ Tests:
 Run: python tests/test_phase5.py
 """
 import asyncio
-import sys
 import os
+import sys
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loguru import logger
 from core.logger import setup_logger
-from risk.position_sizer import get_position_sizer
 from risk.greeks_validator import get_greeks_validator
+from risk.position_sizer import get_position_sizer
+
 
 def test_position_sizing():
     print("\n--- Testing Position Sizer ---")
@@ -80,7 +80,7 @@ def test_greeks_validation():
         print(f"❌ Bad Leg Accepted: {v2}")
         return False
         
-    print(f"✅ Delta Check Passed (Accepted -0.20, Rejected -0.45)")
+    print("✅ Delta Check Passed (Accepted -0.20, Rejected -0.45)")
     
     # 2. Vanna Stress Test
     # Net Delta: 0.10
@@ -104,7 +104,7 @@ def test_greeks_validation():
         print(f"❌ Risky Vanna Accepted: {res_risky}")
         return False
         
-    print(f"✅ Vanna Stress Test Passed (Detected risky delta expansion)")
+    print("✅ Vanna Stress Test Passed (Detected risky delta expansion)")
     
     return True
 
@@ -119,7 +119,7 @@ async def run_tests():
         print("\n✅ ALL PHASE 5 TESTS PASSED")
         return 0
     else:
-        print(f"\n❌ TESTS FAILED")
+        print("\n❌ TESTS FAILED")
         return 1
 
 if __name__ == "__main__":

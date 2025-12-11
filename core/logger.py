@@ -7,7 +7,7 @@ IMPORTANT: Logger is NOT auto-initialized. Call setup_logger() explicitly.
 
 import sys
 from pathlib import Path
-from typing import Optional
+
 from loguru import logger
 
 # Remove default handler

@@ -1,5 +1,6 @@
+
 import google.generativeai as genai
-import os
+
 from config import get_config
 
 config = get_config()

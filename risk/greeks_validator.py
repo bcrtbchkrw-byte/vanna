@@ -3,9 +3,10 @@ Greeks Validation Module
 
 Ensures option strategies conform to safety parameters for Delta, Theta, Gamma, and Vanna.
 """
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, Optional
+
 from loguru import logger
-from config import get_config
+
 
 class GreeksValidator:
     """

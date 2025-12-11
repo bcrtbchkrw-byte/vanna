@@ -7,19 +7,20 @@ Tests:
 
 Run: python tests/test_phase9.py
 """
-import sys
-import os
-import pandas as pd
-import numpy as np
 import asyncio
+import os
+import sys
+
+import numpy as np
+import pandas as pd
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loguru import logger
 from core.logger import setup_logger
 from ml.features import FeatureEngineer
 from ml.predictor import TradePredictor
+
 
 def test_feature_engineering():
     print("\n--- Testing Feature Engineering ---")
@@ -100,7 +101,7 @@ async def run_tests():
         print("\n✅ ALL PHASE 9 TESTS PASSED")
         return 0
     else:
-        print(f"\n❌ TESTS FAILED")
+        print("\n❌ TESTS FAILED")
         return 1
 
 if __name__ == "__main__":

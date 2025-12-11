@@ -8,18 +8,19 @@ Tests:
 Run: python tests/test_phase7.py
 """
 import asyncio
-import sys
 import os
-from unittest.mock import MagicMock, AsyncMock
+import sys
+from unittest.mock import AsyncMock, MagicMock
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loguru import logger
+from ib_insync import Contract, Order, Trade
+
 from core.logger import setup_logger
-from execution.order_manager import get_order_manager, OrderManager
 from execution.exit_manager import get_exit_manager
-from ib_insync import Contract, Order, Trade, ComboLeg
+from execution.order_manager import get_order_manager
+
 
 async def test_order_manager():
     print("\n--- Testing Order Manager ---")
@@ -71,7 +72,7 @@ async def test_order_manager():
         print(f"❌ Combo Legs count {len(contract_arg.comboLegs)} != 2")
         return False
         
-    print(f"✅ Contract construction OK (BAG with 2 legs)")
+    print("✅ Contract construction OK (BAG with 2 legs)")
     
     # Check Order
     # Credit Spread -> SELL action expected with Positive limit? 
@@ -85,7 +86,7 @@ async def test_order_manager():
         print(f"❌ Limit Price {order_arg.lmtPrice} != 1.50")
         return False
         
-    print(f"✅ Order execution logic OK")
+    print("✅ Order execution logic OK")
     return True
 
 async def test_exit_manager():
@@ -153,7 +154,7 @@ async def run_tests():
         print("\n✅ ALL PHASE 7 TESTS PASSED")
         return 0
     else:
-        print(f"\n❌ TESTS FAILED")
+        print("\n❌ TESTS FAILED")
         return 1
 
 if __name__ == "__main__":

@@ -3,10 +3,13 @@ Trade Predictor Module
 
 Interface for ML model inference.
 """
-from typing import Dict, Any, Optional
+import random  # Placeholder for real model
+from typing import Any, Dict
+
 from loguru import logger
+
 from ml.features import FeatureEngineer
-import random # Placeholder for real model
+
 
 class TradePredictor:
     """

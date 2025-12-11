@@ -6,8 +6,9 @@ Fetches market data, option chains, and Greeks from IBKR.
 
 import asyncio
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from ib_insync import Stock, Option, Index, Contract, Ticker
+from typing import Any, Dict, Optional
+
+from ib_insync import Contract, Index, Stock
 
 from core.logger import get_logger
 from ibkr.connection import get_ibkr_connection
@@ -114,7 +115,7 @@ class IBKRDataFetcher:
             
             if vix_value and vix_value > 0:
                 logger.info(f"📈 VIX: {vix_value:.2f}")
-                return vix_value
+                return float(vix_value) if vix_value else None
             else:
                 logger.warning("Could not fetch VIX value")
                 return None
@@ -130,7 +131,7 @@ class IBKRDataFetcher:
     async def get_option_chain(
         self,
         symbol: str,
-        expiry: str = None,
+        expiry: Optional[str] = None,
         strikes: int = 10
     ) -> Optional[Dict[str, Any]]:
         """

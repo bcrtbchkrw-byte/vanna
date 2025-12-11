@@ -3,11 +3,13 @@ System Watchdog
 
 Monitors application health and connectivity.
 """
-import asyncio
 from typing import Optional
+
 from loguru import logger
-from ibkr.connection import get_ibkr_connection
+
 from automation.scheduler import get_scheduler
+from ibkr.connection import get_ibkr_connection
+
 
 class SystemWatchdog:
     """

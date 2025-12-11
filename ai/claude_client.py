@@ -2,16 +2,15 @@
 Claude AI Client
 Handles deep strategy analysis with Anthropic Claude with cost tracking.
 """
-from typing import Optional, Dict, Any, List
+from datetime import date
+from typing import Any, Dict, List, Optional
+
 from anthropic import AsyncAnthropic
 from loguru import logger
-from datetime import datetime, date
-import os
+
+from ai.prompts import get_claude_greeks_analysis_prompt, parse_claude_response
 from config import get_config
-from ai.prompts import (
-    get_claude_greeks_analysis_prompt, 
-    parse_claude_response
-)
+
 
 class ClaudeClient:
     """
@@ -119,8 +118,7 @@ class ClaudeClient:
                 usage = message.usage
                 self._track_usage(usage.input_tokens, usage.output_tokens)
                 
-                return message.content[0].text
-                
+                return str(message.content[0].text) if message.content else None             
             return None
             
         except Exception as e:

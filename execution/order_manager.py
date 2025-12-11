@@ -3,13 +3,14 @@ Order Execution Module
 
 Handles placement and management of IBKR orders, including complex Combo (BAG) orders.
 """
-import asyncio
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, cast
+
+from ib_insync import ComboLeg, Contract, LimitOrder, Order, Trade
 from loguru import logger
-from ib_insync import Contract, Order, LimitOrder, MarketOrder, TagValue, ComboLeg, Trade
 
 from config import get_config
 from ibkr.connection import get_ibkr_connection
+
 
 class OrderManager:
     """
@@ -44,10 +45,11 @@ class OrderManager:
             # Ensure contract is qualified (has conId)
             await ib.qualifyContractsAsync(contract)
             
-            logger.info(f"🚀 Placing Order: {order.action} {order.totalQuantity} {contract.localSymbol} @ {order.lmtPrice or 'MKT'}")
+            msg = f"🚀 Order: {order.action} {order.totalQuantity} {contract.localSymbol} @ {order.lmtPrice or 'MKT'}"
+            logger.info(msg)
             
             trade = ib.placeOrder(contract, order)
-            return trade
+            return cast(Trade, trade)
             
         except Exception as e:
             logger.error(f"Error placing order: {e}")
@@ -105,7 +107,7 @@ class OrderManager:
             await ib.qualifyContractsAsync(*raw_contracts)
             
             # 2. Build ComboLegs
-            combo_legs = []
+            combo_legs: List[ComboLeg] = []
             symbol = ""
             currency = "USD"
             exchange = "SMART"
@@ -122,8 +124,10 @@ class OrderManager:
                     exchange=exchange
                 ))
                 
-                if not symbol: symbol = c.symbol
-                if not currency: currency = c.currency
+                if not symbol:
+                    symbol = c.symbol
+                if not currency:
+                    currency = c.currency
             
             # 3. Create BAG Contract
             bag = Contract(
@@ -153,7 +157,7 @@ class OrderManager:
             # - Action BUY = Pay Debit.
             # - Action SELL = Receive Credit.
             
-            main_action = 'SELL' if price_limit and price_limit > 0 else 'BUY' 
+            # main_action = 'SELL' if price_limit and price_limit > 0 else 'BUY' 
             # Wait, Credit Spreads are sold. Debit Spreads are bought.
             # Assuming price_limit passed is the absolute value (e.g. 1.00).
             # If it's a Credit Strategy -> SELL.
@@ -173,11 +177,11 @@ class OrderManager:
             # Add algo params if needed
             
             logger.info(f"🧩 Placing Combo {strategy_name}: {order_action} {quantity} @ {limit_price}")
-            for l in combo_legs:
-                logger.debug(f"  - Leg: {l.action} {l.ratio}x conId={l.conId}")
+            for cl in combo_legs:
+                logger.debug(f"  - Leg: {cl.action} {cl.ratio}x conId={cl.conId}")
                 
             trade = ib.placeOrder(bag, order)
-            return trade
+            return cast(Trade, trade)
             
         except Exception as e:
             logger.error(f"Error placing spread order: {e}")
@@ -186,7 +190,8 @@ class OrderManager:
     async def cancel_all_orders(self):
         """Cancel all open orders."""
         ib = await self._get_ib()
-        if not ib.isConnected(): return
+        if not ib.isConnected():
+            return
         
         orders = ib.openOrders()
         for o in orders:

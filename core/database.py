@@ -5,10 +5,11 @@ SQLite database for trades, positions, and P&L tracking.
 Uses aiosqlite for async operations.
 """
 
-import aiosqlite
-from pathlib import Path
-from typing import Optional, Any
 from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import aiosqlite
 
 from core.logger import get_logger
 
@@ -49,6 +50,9 @@ class Database:
     
     async def _create_tables(self) -> None:
         """Create database tables if they don't exist."""
+        if not self._connection:
+            logger.error("Cannot create tables: Database not connected.")
+            return
         await self._connection.executescript("""
             -- Trades table
             CREATE TABLE IF NOT EXISTS trades (
@@ -111,20 +115,28 @@ class Database:
         """)
         await self._connection.commit()
     
-    async def execute(self, query: str, params: tuple = ()) -> aiosqlite.Cursor:
+    async def execute(self, query: str, params: tuple = ()) -> Optional[aiosqlite.Cursor]:
         """Execute a query and return cursor."""
+        if not self._connection:
+            logger.error("Cannot execute query: Database not connected.")
+            return None
         cursor = await self._connection.execute(query, params)
         await self._connection.commit()
         return cursor
     
     async def fetch_one(self, query: str, params: tuple = ()) -> Optional[dict]:
         """Fetch a single row as dict."""
+        if not self._connection:
+            logger.error("Cannot fetch one row: Database not connected.")
+            return None
         cursor = await self._connection.execute(query, params)
         row = await cursor.fetchone()
         return dict(row) if row else None
     
     async def fetch_all(self, query: str, params: tuple = ()) -> list[dict]:
         """Fetch all rows as list of dicts."""
+        if not self._connection:
+             raise ConnectionError("Database not connected")
         cursor = await self._connection.execute(query, params)
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -150,7 +162,9 @@ class Database:
             (symbol, strategy, datetime.now(), entry_price, quantity, notes)
         )
         logger.info(f"TRADE: Inserted trade {symbol} {strategy}")
-        return cursor.lastrowid
+        if not cursor:
+            raise ConnectionError("Cursor failed")
+        return cursor.lastrowid if cursor.lastrowid else 0
     
     async def close_trade(self, trade_id: int, exit_price: float, pnl: float) -> None:
         """Close an existing trade."""
@@ -191,7 +205,9 @@ class Database:
             """,
             (symbol, phase, decision, reasoning, confidence, cost)
         )
-        return cursor.lastrowid
+        if not cursor:
+            raise ConnectionError("Cursor failed")
+        return cursor.lastrowid if cursor.lastrowid else 0
 
 
 async def get_database() -> Database:

@@ -3,9 +3,12 @@ VIX Monitor - Market Regime Detection
 Monitors VIX and classifies market into regimes (Low/Normal/High/Extreme).
 """
 from typing import Optional
+
 from loguru import logger
+
 from config import get_config
 from ibkr.data_fetcher import get_data_fetcher
+
 
 class VIXMonitor:
     """

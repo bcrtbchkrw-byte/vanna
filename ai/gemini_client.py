@@ -2,17 +2,15 @@
 Gemini AI Client
 Handles interactions with Google Gemini API for fast batch analysis with cost tracking.
 """
-from typing import Dict, Any, List, Optional
+from datetime import date
+from typing import Any, Dict, List, Optional
+
 import google.generativeai as genai
 from loguru import logger
-from datetime import datetime, date
-import os
+
+from ai.prompts import get_gemini_batch_analysis_prompt, get_gemini_fundamental_prompt, parse_gemini_response
 from config import get_config
-from ai.prompts import (
-    get_gemini_fundamental_prompt,
-    get_gemini_batch_analysis_prompt,
-    parse_gemini_response
-)
+
 
 class GeminiClient:
     """
@@ -150,15 +148,15 @@ class GeminiClient:
             
             if response and response.text:
                 # Track usage (approximate if metadata missing)
-                # usage_metadata is often available
                 usage = response.usage_metadata
                 if usage:
                     self._track_usage(usage.prompt_token_count, usage.candidates_token_count)
                 else:
-                    # Fallback estimate
                     self._track_usage(len(prompt)//4, len(response.text)//4)
                     
-                return response.text
+                return str(response.text)
+                
+            return None
                 
             return None
             

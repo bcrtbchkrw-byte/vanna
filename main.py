@@ -5,9 +5,10 @@ Entry point for the trading system.
 """
 
 import asyncio
+
 from config import get_config
-from core.logger import setup_logger, get_logger
 from core.database import get_database
+from core.logger import get_logger, setup_logger
 
 
 async def main():

@@ -10,13 +10,12 @@ Tests:
 Run: python tests/test_phase6.py
 """
 import asyncio
-import sys
 import os
+import sys
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loguru import logger
 from core.logger import setup_logger
 from strategies.credit_spreads import VerticalCreditSpread
 from strategies.iron_condor import IronCondor
@@ -112,7 +111,8 @@ async def test_iron_condor():
         return False
         
     ic = candidates[0]
-    print(f"  Iron Condor Credit: ${ic['net_credit']:.2f}, Short Put: {ic['short_put_strike']}, Short Call: {ic['short_call_strike']}")
+    print(f"  Iron Condor Credit: ${ic['net_credit']:.2f}, "
+          f"Short Put: {ic['short_put_strike']}, Short Call: {ic['short_call_strike']}")
     
     # Expected: Short Put 94 (Credit 0.50) + Short Call 106 (Credit 0.50) = 1.00
     if abs(ic['net_credit'] - 1.00) > 0.05:
@@ -133,7 +133,7 @@ async def run_tests():
         print("\n✅ ALL PHASE 6 TESTS PASSED")
         return 0
     else:
-        print(f"\n❌ TESTS FAILED")
+        print("\n❌ TESTS FAILED")
         return 1
 
 if __name__ == "__main__":

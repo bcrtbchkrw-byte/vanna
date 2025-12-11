@@ -3,13 +3,14 @@ Screener
 Unified market analysis interface.
 Aggregates VIX, Earnings, and Liquidity checks to filter trading candidates.
 """
-from typing import List, Dict, Any, Optional
-import asyncio
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
 
-from analysis.vix_monitor import get_vix_monitor
 from analysis.earnings_checker import get_earnings_checker
 from analysis.liquidity import get_liquidity_checker
+from analysis.vix_monitor import get_vix_monitor
+
 
 class Screener:
     """
@@ -29,11 +30,15 @@ class Screener:
         Returns:
             Dict containing 'market_status' and 'results' (per symbol)
         """
-        results = {
+        passed_symbols: List[str] = []
+        failed_symbols: Dict[str, str] = {}
+        details: Dict[str, Any] = {}
+
+        results: Dict[str, Any] = {
             'market_status': 'UNKNOWN',
-            'passed_symbols': [],
-            'failed_symbols': {},
-            'details': {}
+            'passed_symbols': passed_symbols,
+            'failed_symbols': failed_symbols,
+            'details': details
         }
         
         # 1. Global Market Check (VIX)
@@ -55,16 +60,16 @@ class Screener:
             earnings_result = await self.earnings_checker.check_blackout(symbol)
             
             if earnings_result['in_blackout']:
-                results['failed_symbols'][symbol] = f"Earnings Blackout ({earnings_result['reason']})"
+                failed_symbols[symbol] = f"Earnings Blackout ({earnings_result['reason']})"
                 logger.info(f"❌ {symbol} failed: Earnings Blackout")
                 continue
                 
             # If passed earnings, we consider it a candidate
             # (Liquidity is checked later on specific contracts found for this symbol)
-            results['passed_symbols'].append(symbol)
-            results['details'][symbol] = {'earnings': earnings_result}
+            passed_symbols.append(symbol)
+            details[symbol] = {'earnings': earnings_result}
             
-        logger.info(f"🛡️ Screening Complete: {len(results['passed_symbols'])}/{len(symbols)} passed")
+        logger.info(f"🛡️ Screening Complete: {len(passed_symbols)}/{len(symbols)} passed")
         return results
 
 # Singleton

@@ -3,10 +3,13 @@ Exit Management Module
 
 Monitors active positions and manages profit taking / stop losses.
 """
-from typing import Dict, Any, Optional
+from typing import Any, Optional
+
+from ib_insync import MarketOrder
 from loguru import logger
-from ib_insync import Contract, Order, MarketOrder
-from execution.order_manager import get_order_manager, OrderManager
+
+from execution.order_manager import get_order_manager
+
 
 class ExitManager:
     """
@@ -71,7 +74,8 @@ class ExitManager:
             return True
             
         if current_price >= (entry_price * self.stop_loss_mult):
-            logger.info(f"🛑 Stop Loss Triggered for {symbol} (Price {current_price} > Limit {entry_price * self.stop_loss_mult})")
+            msg = f"🛑 SL for {symbol} (Price {current_price} > Limit {entry_price * self.stop_loss_mult})"
+            logger.info(msg)
             await self._close_position(position, "Stop Loss")
             return True
             

@@ -2,11 +2,14 @@
 Earnings Checker
 Prevent trading near earnings announcements to avoid binary events.
 """
-from typing import Dict, Any, Optional
 from datetime import datetime
+from typing import Any, Dict, Optional, cast
+
 from loguru import logger
+
 from config import get_config
 from ibkr.data_fetcher import get_data_fetcher
+
 
 class EarningsChecker:
     """Check earnings dates using IBKR fundamental data."""
@@ -28,7 +31,7 @@ class EarningsChecker:
         if symbol in self.cache:
             timestamp, result = self.cache[symbol]
             if (datetime.now() - timestamp).total_seconds() < 86400:
-                return result
+                return cast(Dict[str, Any], result)
         
         earnings_date = await self.data_fetcher.get_earnings_date(symbol)
         

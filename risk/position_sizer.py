@@ -4,10 +4,12 @@ Position Sizing Module
 Determines safe trade sizes based on account equity, risk parameters,
 and mathematical models (Fixed Risk, Kelly Criterion).
 """
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
+
 from loguru import logger
+
 from config import get_config
-import math
+
 
 class PositionSizer:
     """

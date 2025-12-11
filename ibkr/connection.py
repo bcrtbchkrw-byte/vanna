@@ -10,7 +10,8 @@ Features:
 
 import asyncio
 from typing import Optional
-from ib_insync import IB, util
+
+from ib_insync import IB
 
 from core.logger import get_logger
 
@@ -97,7 +98,7 @@ class IBKRConnection:
                 # Verify connection
                 if self._ib.isConnected():
                     accounts = self._ib.managedAccounts()
-                    logger.info(f"✅ Connected to IBKR successfully!")
+                    logger.info("✅ Connected to IBKR successfully!")
                     logger.info(f"   Accounts: {accounts}")
                     
                     # Set account if not specified
@@ -211,10 +212,10 @@ class IBKRConnection:
 
 
 async def get_ibkr_connection(
-    host: str = None,
-    port: int = None,
-    client_id: int = None,
-    account: str = None
+        host: Optional[str] = None, 
+        port: Optional[int] = None, 
+        client_id: Optional[int] = None,
+        account: Optional[str] = None
 ) -> IBKRConnection:
     """
     Get the global IBKR connection instance.

@@ -8,17 +8,17 @@ Tests:
 Run: python tests/test_phase8.py
 """
 import asyncio
-import sys
 import os
-from unittest.mock import MagicMock, AsyncMock
+import sys
+from unittest.mock import AsyncMock, MagicMock
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loguru import logger
-from core.logger import setup_logger
 from automation.scheduler import BotScheduler
 from automation.watchdog import SystemWatchdog
+from core.logger import setup_logger
+
 
 async def test_scheduler():
     print("\n--- Testing Scheduler ---")
@@ -101,7 +101,7 @@ async def run_tests():
         print("\n✅ ALL PHASE 8 TESTS PASSED")
         return 0
     else:
-        print(f"\n❌ TESTS FAILED")
+        print("\n❌ TESTS FAILED")
         return 1
 
 if __name__ == "__main__":

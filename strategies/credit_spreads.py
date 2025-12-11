@@ -4,10 +4,11 @@ Vertical Credit Spread Strategy
 Implements Bull Put Spreads and Bear Call Spreads.
 Target: High probability income (Short Delta ~0.20).
 """
-from typing import Dict, Any, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from strategies.base_strategy import AbstractStrategy, StrategySignal
-from loguru import logger
-import math
+
 
 class VerticalCreditSpread(AbstractStrategy):
     
@@ -31,8 +32,9 @@ class VerticalCreditSpread(AbstractStrategy):
         # Trend check
         
         vix = market_data.get('vix', 0)
-        iv_rank = market_data.get('iv_rank', 0)
-        price = market_data.get('price', 0)
+        # vix = market_data.get('vix', 0)
+        # iv_rank = market_data.get('iv_rank', 0)
+        # price = market_data.get('price', 0)
         
         setup_quality = 5.0
         reasoning = []
@@ -112,7 +114,7 @@ class VerticalCreditSpread(AbstractStrategy):
         
         # Find Short Leg (Delta ~ target)
         # Put Delta is negative (-0.20). Call Delta is positive (0.20).
-        target_delta_val = -self.target_delta if right == 'P' else self.target_delta
+        # target_delta_val = -self.target_delta if right == 'P' else self.target_delta
         
         # Find closest leg to target delta
         # This is O(N^2) naive implementation for finding pairs
@@ -135,7 +137,8 @@ class VerticalCreditSpread(AbstractStrategy):
             for long_leg in potential_long_legs:
                 width = abs(short_leg['strike'] - long_leg['strike'])
                 
-                if width == 0: continue
+                if width == 0:
+                    continue
                 
                 # Credit calculation
                 # Sell Short (Bid), Buy Long (Ask)
@@ -168,4 +171,4 @@ class VerticalCreditSpread(AbstractStrategy):
         # Return top 2 by credit
         found.sort(key=lambda x: x['net_credit'], reverse=True)
         return found[:2]
-from datetime import datetime
+

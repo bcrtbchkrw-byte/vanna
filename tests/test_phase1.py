@@ -10,8 +10,8 @@ Run: python tests/test_phase1.py
 """
 
 import asyncio
-import sys
 import os
+import sys
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,7 +43,7 @@ def test_logger():
     """Test logger initialization."""
     print("Testing logger...", end=" ")
     
-    from core.logger import setup_logger, get_logger
+    from core.logger import get_logger, setup_logger
     
     # Setup logger
     setup_logger(level="DEBUG", log_dir="logs")

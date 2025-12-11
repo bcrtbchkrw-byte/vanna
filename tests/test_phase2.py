@@ -14,10 +14,11 @@ IMPORTANT: Requires running IB Gateway!
 """
 
 import asyncio
-import sys
 import os
+import sys
 
 import nest_asyncio
+
 nest_asyncio.apply()
 
 # Add project root to path

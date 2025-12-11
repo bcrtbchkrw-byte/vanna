@@ -8,6 +8,7 @@ All config is loaded lazily to avoid import-time failures.
 import os
 from dataclasses import dataclass
 from typing import Optional
+
 from dotenv import load_dotenv
 
 # Load .env file if it exists

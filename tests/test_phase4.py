@@ -10,8 +10,9 @@ Tests:
 Run: python tests/test_phase4.py
 """
 import asyncio
-import sys
 import os
+import sys
+
 import nest_asyncio
 
 nest_asyncio.apply()
@@ -19,8 +20,9 @@ nest_asyncio.apply()
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from loguru import logger
-from core.logger import setup_logger
+
+from core.logger import setup_logger  # noqa: E402
+
 
 async def test_gemini_client():
     print("\n--- Testing Gemini Client ---")

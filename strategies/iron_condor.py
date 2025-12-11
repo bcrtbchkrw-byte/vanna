@@ -4,11 +4,12 @@ Iron Condor Strategy
 Combines OTM Bull Put Spread and OTM Bear Call Spread.
 Target: Neutral market, harvesting Theta from both sides.
 """
-from typing import Dict, Any, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from strategies.base_strategy import AbstractStrategy, StrategySignal
 from strategies.credit_spreads import VerticalCreditSpread
-from datetime import datetime
-from loguru import logger
+
 
 class IronCondor(AbstractStrategy):
     
@@ -89,7 +90,8 @@ class IronCondor(AbstractStrategy):
                 max_wing_width = max(bp['width'], bc['width'])
                 max_loss = (max_wing_width * 100) - (total_credit * 100)
                 
-                if max_loss <= 0: continue # Arbitrage? Unlikely data error
+                if max_loss <= 0:
+                    continue # Arbitrage? Unlikely data error
                 
                 roi = (total_credit * 100) / max_loss
                 

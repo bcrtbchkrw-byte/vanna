@@ -2,11 +2,13 @@
 Liquidity Checker
 Validates option liquidity (Spread, Volume/OI) to avoid slippage.
 """
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
+
 from ib_insync import Contract
-from loguru import logger
+
 from config import get_config
 from ibkr.data_fetcher import get_data_fetcher
+
 
 class LiquidityChecker:
     """Check option liquidity before trading."""
