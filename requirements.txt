@@ -29,5 +29,6 @@ types-requests
 types-pytz
 pytest>=7.0.0
 pytest-asyncio
+python-telegram-bot
 streamlit
 plotly
