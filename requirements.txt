@@ -33,5 +33,9 @@ pytest-asyncio
 # Phase 12: Notifications
 python-telegram-bot
 
+# Phase 13: Advanced ML
+tensorflow
+
+
 streamlit
 plotly
