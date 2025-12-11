@@ -36,11 +36,6 @@ class AIConfig:
 
 
 @dataclass
-class TelegramConfig:
-    token: str
-    chat_id: str
-
-@dataclass
 class TradingConfig:
     """Trading parameters."""
     max_risk_per_trade: float
@@ -106,11 +101,6 @@ class Config:
             daily_cost_limit=float(os.getenv('AI_DAILY_COST_LIMIT', '5.0')),
         )
         
-        self.telegram = TelegramConfig(
-            token=os.getenv('TELEGRAM_TOKEN', ''),
-            chat_id=os.getenv('TELEGRAM_CHAT_ID', ''),
-        )
-
         self.trading = TradingConfig(
             max_risk_per_trade=float(os.getenv('MAX_RISK_PER_TRADE', '120')),
             max_allocation_percent=float(os.getenv('MAX_ALLOCATION_PERCENT', '25')),

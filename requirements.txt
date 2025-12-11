@@ -29,6 +29,9 @@ types-requests
 types-pytz
 pytest>=7.0.0
 pytest-asyncio
+
+# Phase 12: Notifications
 python-telegram-bot
+
 streamlit
 plotly
