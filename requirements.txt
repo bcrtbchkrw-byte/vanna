@@ -28,4 +28,6 @@ mypy>=1.6.0
 types-requests
 types-pytz
 pytest>=7.0.0
-pytest-asyncio>=0.21.0
+pytest-asyncio
+streamlit
+plotly

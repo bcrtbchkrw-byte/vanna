@@ -40,16 +40,8 @@ echo "✅ Type Checking Passed"
 echo "=================================================="
 echo "🧪 Step 3: Unit Tests (Pytest)"
 echo "=================================================="
-# Run legacy test scripts (they return exit code 1 on failure)
-python tests/test_phase1.py
-python tests/test_phase2.py
-python tests/test_phase3.py
-python tests/test_phase4.py
-python tests/test_phase5.py
-python tests/test_phase6.py
-python tests/test_phase7.py
-python tests/test_phase8.py
-python tests/test_phase9.py
+# Run all tests using pytest
+pytest tests/
 echo "✅ All Tests Passed"
 
 echo "🎉 CI Pipeline COMPLETE: READY FOR DEPLOY"

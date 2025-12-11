@@ -1,23 +1,7 @@
-"""
-Phase 9 Test - Machine Learning
-
-Tests:
-- Feature Engineering (RSI, Volatility calc)
-- Trade Predictor (Interface check)
-
-Run: python tests/test_phase9.py
-"""
-import asyncio
-import os
-import sys
 
 import numpy as np
 import pandas as pd
 
-# Add project root to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from core.logger import setup_logger
 from ml.features import FeatureEngineer
 from ml.predictor import TradePredictor
 
@@ -41,20 +25,15 @@ def test_feature_engineering():
     expected_cols = ['rsi', 'hist_vol', 'sma_20', 'dist_sma_20']
     missing = [c for c in expected_cols if c not in features.columns]
     
-    if missing:
-        print(f"❌ Missing features: {missing}")
-        return False
+    assert not missing, f"Missing features: {missing}"
         
     print(f"✅ Features generated: {list(features.columns)}")
     
     # Check RSI values
     last_rsi = features['rsi'].iloc[-1]
-    if not (0 <= last_rsi <= 100):
-        print(f"❌ Invalid RSI: {last_rsi}")
-        return False
+    assert 0 <= last_rsi <= 100, f"Invalid RSI: {last_rsi}"
         
     print(f"✅ RSI Valid: {last_rsi:.2f}")
-    return True
 
 def test_predictor():
     print("\n--- Testing Trade Predictor ---")
@@ -69,9 +48,7 @@ def test_predictor():
     prob_high = predictor.predict_probability(setup_high_vix)
     print(f"Prediction (VIX 25): {prob_high:.1%}")
     
-    if prob_high < 0.60:
-        print("❌ Prediction logic failed for High VIX")
-        return False
+    assert prob_high > 0.60, "Prediction logic failed for High VIX"
         
     # Test Low VIX case (Expect low prob)
     setup_low_vix = {
@@ -82,27 +59,6 @@ def test_predictor():
     prob_low = predictor.predict_probability(setup_low_vix)
     print(f"Prediction (VIX 10): {prob_low:.1%}")
     
-    if prob_low > 0.55:
-        print("❌ Prediction logic failed for Low VIX")
-        return False
+    assert prob_low <= 0.55, "Prediction logic failed for Low VIX"
         
     print("✅ Predictor logic valid")
-    return True
-
-async def run_tests():
-    setup_logger()
-    
-    results = []
-    # Using run_in_executor if heavy? No, these are light.
-    results.append(test_feature_engineering())
-    results.append(test_predictor())
-    
-    if all(results):
-        print("\n✅ ALL PHASE 9 TESTS PASSED")
-        return 0
-    else:
-        print("\n❌ TESTS FAILED")
-        return 1
-
-if __name__ == "__main__":
-    sys.exit(asyncio.run(run_tests()))
