@@ -37,5 +37,11 @@ python-telegram-bot
 tensorflow
 
 
+# Phase 17: Reinforcement Learning
+gymnasium>=1.0.0
+stable-baselines3
+
+
 streamlit
+
 plotly
