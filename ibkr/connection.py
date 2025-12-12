@@ -38,7 +38,8 @@ class IBKRConnection:
     
     def __init__(
         self,
-        host: str = "ib-gateway",
+        host: str = "127.0.0.1",
+
         port: int = 4002,
         client_id: int = 99,
         account: str = ""

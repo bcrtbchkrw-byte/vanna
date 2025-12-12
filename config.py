@@ -86,7 +86,8 @@ class Config:
     def _load_config(self):
         """Load all configuration from environment."""
         self.ibkr = IBKRConfig(
-            host=os.getenv('IBKR_HOST', 'ib-gateway'),
+            host=os.getenv('IBKR_HOST', '127.0.0.1'),
+
             port=int(os.getenv('IBKR_PORT', '4002')),
             client_id=int(os.getenv('IBKR_CLIENT_ID', '1')),
             account=os.getenv('IBKR_ACCOUNT', ''),
