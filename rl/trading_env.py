@@ -131,7 +131,7 @@ class TradingEnvironment(gym.Env):
         """Reset environment state for new episode."""
         self.capital = self.initial_capital
         self.position_size = 0
-        self.position_price = 0.0
+        self.cumulative_pnl = 0.0  # Track return-based P/L
         self.entry_step = 0
         self.current_step = 0
         self.episode_start_idx = 0
@@ -163,36 +163,28 @@ class TradingEnvironment(gym.Env):
         return np.array(features, dtype=np.float32)
     
     def _get_obs(self) -> np.ndarray:
-        """Get current observation (32 features)."""
+        """Get current observation (49 features)."""
         idx = self.episode_start_idx + self.current_step
         idx = min(idx, len(self.df) - 1)
         
-        # Get 25 market features from data
+        # Get 42 market features from data
         market_features = self._get_market_features(idx)
         
-        # Calculate 7 position features
-        if self.position_size > 0:
-            current_price = self.df.iloc[idx]['close']
-            pnl_pct = (current_price - self.position_price) / self.position_price
-            days_held = (self.current_step - self.entry_step) / 390  # Normalize by trading day
-        else:
-            pnl_pct = 0.0
-            days_held = 0.0
-        
+        # Calculate 7 position features (no close price needed!)
         position_features = np.array([
-            pnl_pct * 10,                           # pnl_pct (scaled)
-            min(days_held, 1.0),                    # days_held (capped)
-            1.0 if self.position_size > 0 else 0.0, # position_flag
-            self.capital / self.initial_capital,    # capital_ratio
-            min(self.trades / 10, 1.0),             # trade_count (normalized)
-            0.02,                                   # bid_ask_spread (placeholder)
-            1.0,                                    # market_open
+            self.cumulative_pnl * 10,                # pnl_pct (scaled)
+            min((self.current_step - self.entry_step) / 390, 1.0) if self.position_size > 0 else 0.0,  # days_held
+            1.0 if self.position_size > 0 else 0.0,  # position_flag
+            self.capital / self.initial_capital,     # capital_ratio
+            min(self.trades / 10, 1.0),              # trade_count (normalized)
+            0.02,                                    # bid_ask_spread (placeholder)
+            1.0,                                     # market_open
         ], dtype=np.float32)
         
-        # Combine: 25 market + 7 position = 32
+        # Combine: 42 market + 7 position = 49
         obs = np.concatenate([market_features, position_features])
         
-        # Ensure exactly 32 features
+        # Ensure exactly N_FEATURES
         if len(obs) < self.N_FEATURES:
             obs = np.pad(obs, (0, self.N_FEATURES - len(obs)))
         elif len(obs) > self.N_FEATURES:
@@ -215,9 +207,9 @@ class TradingEnvironment(gym.Env):
             "symbol": self.current_symbol,
             "step": self.current_step,
             "data_idx": idx,
-            "price": row.get('close', 0),
-            "vix": row.get('vix', 0),
+            "vix_norm": row.get('vix_norm', 0),
             "vanna": row.get('vanna', 0),
+            "return_1m": row.get('return_1m', 0),
         }
     
     def reset(
@@ -247,46 +239,56 @@ class TradingEnvironment(gym.Env):
         self,
         action: int
     ) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict]:
-        """Execute one step."""
+        """
+        Execute one step.
+        
+        Uses return_1m from data for P/L calculation (no absolute prices needed).
+        """
         reward = 0.0
         terminated = False
         truncated = False
         
         idx = self.episode_start_idx + self.current_step
         idx = min(idx, len(self.df) - 1)
-        current_price = self.df.iloc[idx]['close']
+        
+        # Get return from data (already normalized)
+        current_return = self.df.iloc[idx].get('return_1m', 0)
         
         # Execute action
         if action == 0:  # HOLD
-            reward = -0.001
+            # If in position, accumulate return
+            if self.position_size > 0:
+                self.cumulative_pnl += current_return * self.position_size
+                reward = current_return * 10  # Reward based on return
+            else:
+                reward = -0.001  # Small penalty for doing nothing
             
         elif action == 1:  # OPEN
             if self.position_size == 0:
                 self.position_size = 1
-                self.position_price = current_price
                 self.entry_step = self.current_step
-                self.capital -= current_price * 0.001  # Transaction cost
+                self.cumulative_pnl = 0  # Reset for new position
                 self.trades += 1
-                reward = 0.01
+                reward = 0.01  # Small reward for action
             else:
-                reward = -0.05
+                reward = -0.05  # Penalty for invalid action
         
         elif action == 2:  # CLOSE
             if self.position_size > 0:
-                pnl_pct = (current_price - self.position_price) / self.position_price
-                profit = pnl_pct * self.capital * 0.1
+                # Final P/L is accumulated return
+                profit = self.cumulative_pnl * self.capital * 0.1
                 
                 self.capital += profit
                 self.total_pnl += profit
                 
                 if profit > 0:
                     self.winning_trades += 1
-                    reward = pnl_pct * 10
+                    reward = self.cumulative_pnl * 20  # Reward proportional to return
                 else:
-                    reward = pnl_pct * 5
+                    reward = self.cumulative_pnl * 10  # Smaller penalty
                 
                 self.position_size = 0
-                self.position_price = 0.0
+                self.cumulative_pnl = 0
             else:
                 reward = -0.05
         
