@@ -28,15 +28,15 @@ class TradingEnvironment(gym.Env):
     
     metadata = {"render_modes": ["human", "ansi"]}
     
-    # Market features from parquet (40 total)
+    # Market features from parquet (44 total - all numeric features from *_rl.parquet)
     MARKET_FEATURES = [
-        # VIX (7)
-        'vix', 'vix_ratio', 'vix_in_contango', 'vix_change_1d',
+        # VIX (9)
+        'vix', 'vix3m', 'vix_ratio', 'vix_in_contango', 'vix_change_1d', 'vix_change_5d',
         'vix_percentile', 'vix_zscore', 'regime',
-        # Time (4)
-        'sin_time', 'cos_time', 'sin_dow', 'cos_dow',
-        # Price (4)
-        'return_1m', 'return_5m', 'volatility_20', 'momentum_20',
+        # Time (6)
+        'sin_time', 'cos_time', 'sin_dow', 'cos_dow', 'sin_doy', 'cos_doy',
+        # Price (5)
+        'return_1m', 'return_5m', 'volatility_20', 'momentum_20', 'range_pct',
         # Greeks (7)
         'delta', 'gamma', 'theta', 'vega', 'vanna', 'charm', 'volga',
         # Options (3)
@@ -58,9 +58,9 @@ class TradingEnvironment(gym.Env):
         'trade_count', 'bid_ask_spread', 'market_open'
     ]
     
-    N_MARKET_FEATURES = 40
+    N_MARKET_FEATURES = 44
     N_POSITION_FEATURES = 7
-    N_FEATURES = 47  # 40 market + 7 position
+    N_FEATURES = 51  # 44 market + 7 position
     
     def __init__(
         self,
