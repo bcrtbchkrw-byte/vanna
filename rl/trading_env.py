@@ -281,11 +281,24 @@ class TradingEnvironment(gym.Env):
                 self.capital += profit
                 self.total_pnl += profit
                 
+                # Improved reward function with risk-adjustment
+                hold_time = self.current_step - self.entry_step
+                hold_penalty = -0.001 * hold_time  # Penalize long holds
+                
+                # Base reward proportional to P/L
+                base_reward = self.cumulative_pnl * 15
+                
+                # Sharpe-like adjustment: reward consistency
+                # (higher reward if profit, lower penalty if small loss)
                 if profit > 0:
                     self.winning_trades += 1
-                    reward = self.cumulative_pnl * 20  # Reward proportional to return
+                    # Quick profit bonus
+                    speed_bonus = 0.1 if hold_time < 30 else 0
+                    reward = base_reward + speed_bonus + hold_penalty
                 else:
-                    reward = self.cumulative_pnl * 10  # Smaller penalty
+                    # Cut losses quickly is better
+                    quick_cut_bonus = 0.05 if hold_time < 60 else 0
+                    reward = base_reward + quick_cut_bonus + hold_penalty
                 
                 self.position_size = 0
                 self.cumulative_pnl = 0

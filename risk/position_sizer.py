@@ -38,8 +38,12 @@ class PositionSizer:
         """
         Calculate recommended position size (number of contracts).
         
+        IMPORTANT: For account_value, use AvailableFunds (not NetLiquidation)!
+        NetLiquidation includes unrealized P/L which can be misleading.
+        AvailableFunds = Cash - Margin Requirements
+        
         Args:
-            account_value: Total Net Liquidation Value
+            account_value: AvailableFunds from IBKR account summary
             buying_power: Available Buying Power
             risk_per_contract: Max loss per contract (e.g. spread width or debit paid)
             strategy_capital_per_contract: Margin required per contract

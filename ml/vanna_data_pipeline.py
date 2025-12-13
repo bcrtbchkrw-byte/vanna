@@ -392,9 +392,11 @@ class VannaDataPipeline:
                         'regime': regime,
                         'sin_time': sin_time,
                         'cos_time': cos_time,
-                        'options_iv_atm': None,  # TODO: Fetch options
-                        'options_volume': None,
-                        'options_put_call_ratio': None
+                        # NOTE: Options data requires separate IBKR call (get_options_chain)
+                        # Using 0.0 as default; will be enriched during Saturday pipeline
+                        'options_iv_atm': 0.0,
+                        'options_volume': 0.0,
+                        'options_put_call_ratio': 0.0
                     }
                     
                     results[symbol] = self.storage.save_live_bar(bar_data)
