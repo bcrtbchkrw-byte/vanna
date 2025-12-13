@@ -1,284 +1,239 @@
 """
 Trading Environment for Reinforcement Learning.
 
-Gymnasium-compatible environment for training RL agents on:
-- Position sizing decisions
-- Entry/exit timing
-- Strategy selection
-
-Uses 32 features matching TradeSuccessPredictor.
+Uses REAL historical data from *_vanna.parquet files.
+32 features matching TradeSuccessPredictor.
 """
-from typing import Any, SupportsFloat, Optional
-from datetime import datetime
-import math
-
-import gymnasium as gym
+from typing import Any, SupportsFloat, Optional, List
+from pathlib import Path
+import pandas as pd
 import numpy as np
+import gymnasium as gym
 from gymnasium import spaces
 
 from core.logger import get_logger
 
+logger = get_logger()
+
 
 class TradingEnvironment(gym.Env):
     """
-    Gymnasium environment for options trading.
+    Gymnasium environment using REAL historical data.
     
-    State: 32 features including Greeks (Vanna, Charm, Volga)
+    Loads data from *_1min_vanna.parquet files and steps through it.
     
-    Features (32 total):
-    - VIX metrics (7): vix, vix_ratio, vix_in_contango, vix_change_1d, vix_percentile, vix_zscore, regime
-    - Time features (4): sin_time, cos_time, sin_dow, cos_dow
-    - Price features (4): return_1m, return_5m, volatility_20, momentum_20
-    - Greeks (7): delta, gamma, theta, vega, vanna, charm, volga
-    - Position features (5): pnl_pct, days_held, position_flag, capital_ratio, trade_count
-    - ATM Options (3): atm_iv, atm_vanna, atm_volume
-    - Additional (2): bid_ask_spread, market_open
-    
-    Actions:
-    0 = HOLD (do nothing)
-    1 = OPEN (open new position if none)
-    2 = CLOSE (close existing position)
-    3 = INCREASE (add to position)
-    4 = DECREASE (reduce position)
+    State: 32 features (from parquet columns + position state)
+    Actions: 0=HOLD, 1=OPEN, 2=CLOSE, 3=INCREASE, 4=DECREASE
     """
     
     metadata = {"render_modes": ["human", "ansi"]}
     
-    # Feature names for documentation/debugging
-    FEATURE_NAMES = [
-        # VIX metrics (7)
-        'vix', 'vix_ratio', 'vix_in_contango', 'vix_change_1d', 
+    # Market features from parquet (25)
+    MARKET_FEATURES = [
+        # VIX (7)
+        'vix', 'vix_ratio', 'vix_in_contango', 'vix_change_1d',
         'vix_percentile', 'vix_zscore', 'regime',
-        # Time features (4)
+        # Time (4)
         'sin_time', 'cos_time', 'sin_dow', 'cos_dow',
-        # Price features (4)
+        # Price (4)
         'return_1m', 'return_5m', 'volatility_20', 'momentum_20',
         # Greeks (7)
         'delta', 'gamma', 'theta', 'vega', 'vanna', 'charm', 'volga',
-        # Position features (5)
-        'pnl_pct', 'days_held', 'position_flag', 'capital_ratio', 'trade_count',
-        # ATM Options (3)
-        'atm_iv', 'atm_vanna', 'atm_volume',
-        # Additional (2)
-        'bid_ask_spread', 'market_open'
+        # Options (3)
+        'options_iv_atm', 'options_volume', 'options_put_call_ratio',
     ]
     
-    N_FEATURES = 32
+    # Position features added at runtime (7)
+    POSITION_FEATURES = [
+        'pnl_pct', 'days_held', 'position_flag', 'capital_ratio',
+        'trade_count', 'bid_ask_spread', 'market_open'
+    ]
+    
+    N_FEATURES = 32  # 25 market + 7 position
     
     def __init__(
         self,
+        data_dir: str = "data/vanna_ml",
+        symbols: List[str] = None,
         initial_capital: float = 10000.0,
-        max_steps: int = 252,  # ~1 year of trading days
-        price_volatility: float = 0.02,
+        episode_length: int = 390,  # 1 trading day (390 minutes)
         render_mode: str | None = None
     ) -> None:
         super().__init__()
         
-        self.logger = get_logger()
+        self.data_dir = Path(data_dir)
+        self.symbols = symbols or ['SPY', 'QQQ']
         self.initial_capital = initial_capital
-        self.max_steps = max_steps
-        self.price_volatility = price_volatility
+        self.episode_length = episode_length
         self.render_mode = render_mode
         
-        # State space: 32 continuous features
+        # Load all data
+        self._load_data()
+        
+        # Observation space: 32 features
         self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
+            low=-np.inf, high=np.inf,
             shape=(self.N_FEATURES,),
             dtype=np.float32
         )
         
-        # Action space: 5 discrete actions
+        # Action space: 5 discrete
         self.action_space = spaces.Discrete(5)
         
-        # Environment state
+        # Initialize state
         self._reset_state()
     
+    def _load_data(self) -> None:
+        """Load parquet files for all symbols."""
+        self.data = {}
+        
+        for symbol in self.symbols:
+            filepath = self.data_dir / f"{symbol}_1min_vanna.parquet"
+            
+            if filepath.exists():
+                df = pd.read_parquet(filepath)
+                # Fill NaN
+                df = df.fillna(0)
+                self.data[symbol] = df
+                logger.info(f"Loaded {symbol}: {len(df):,} rows")
+            else:
+                logger.warning(f"File not found: {filepath}")
+        
+        if not self.data:
+            raise ValueError(f"No data found in {self.data_dir}")
+        
+        # Set current symbol
+        self.current_symbol = list(self.data.keys())[0]
+        self.df = self.data[self.current_symbol]
+    
     def _reset_state(self) -> None:
-        """Reset all environment state."""
+        """Reset environment state for new episode."""
         self.capital = self.initial_capital
         self.position_size = 0
         self.position_price = 0.0
-        self.current_price = 100.0  # Starting "stock" price
-        self.prev_price = 100.0
-        self.vix = 18.0  # Starting VIX
-        self.vix3m = 20.0  # VIX3M for term structure
+        self.entry_step = 0
         self.current_step = 0
+        self.episode_start_idx = 0
         self.total_pnl = 0.0
         self.trades = 0
         self.winning_trades = 0
+    
+    def _sample_episode_start(self) -> int:
+        """Sample random starting point for episode."""
+        max_start = len(self.df) - self.episode_length - 1
+        if max_start <= 0:
+            return 0
+        return np.random.randint(0, max_start)
+    
+    def _get_market_features(self, idx: int) -> np.ndarray:
+        """Get market features from parquet row."""
+        row = self.df.iloc[idx]
         
-        # Historical data for features
-        self.vix_history = [18.0] * 20
-        self.price_history = [100.0] * 20
-        self.return_history = [0.0] * 5
+        features = []
+        for col in self.MARKET_FEATURES:
+            if col in row:
+                val = row[col]
+                if pd.isna(val):
+                    val = 0.0
+            else:
+                val = 0.0
+            features.append(float(val))
         
-        # Greeks simulation (updated at each step)
-        self.atm_delta = -0.50
-        self.atm_gamma = 0.03
-        self.atm_theta = -0.05
-        self.atm_vega = 0.15
-        self.atm_vanna = 0.02
-        self.atm_charm = -0.01
-        self.atm_volga = 0.08
-        self.atm_iv = 0.25
+        return np.array(features, dtype=np.float32)
     
     def _get_obs(self) -> np.ndarray:
-        """Get current observation - 32 features."""
+        """Get current observation (32 features)."""
+        idx = self.episode_start_idx + self.current_step
+        idx = min(idx, len(self.df) - 1)
         
-        # Calculate derived features
+        # Get 25 market features from data
+        market_features = self._get_market_features(idx)
+        
+        # Calculate 7 position features
         if self.position_size > 0:
-            pnl_pct = (self.current_price - self.position_price) / self.position_price
-            days_held = self.current_step
+            current_price = self.df.iloc[idx]['close']
+            pnl_pct = (current_price - self.position_price) / self.position_price
+            days_held = (self.current_step - self.entry_step) / 390  # Normalize by trading day
         else:
             pnl_pct = 0.0
-            days_held = 0
+            days_held = 0.0
         
-        # Time features (simulate market time)
-        minute_of_day = (self.current_step * 5) % 390  # 5-min bars
-        day_of_week = (self.current_step // 78) % 5  # 78 bars per day
-        
-        sin_time = math.sin(2 * math.pi * minute_of_day / 390)
-        cos_time = math.cos(2 * math.pi * minute_of_day / 390)
-        sin_dow = math.sin(2 * math.pi * day_of_week / 5)
-        cos_dow = math.cos(2 * math.pi * day_of_week / 5)
-        
-        # VIX features
-        vix_ratio = self.vix / self.vix3m if self.vix3m > 0 else 1.0
-        vix_in_contango = 1.0 if vix_ratio < 1.0 else 0.0
-        vix_change_1d = (self.vix - self.vix_history[-1]) / max(self.vix_history[-1], 1)
-        
-        # VIX percentile (simplified)
-        vix_percentile = min(1.0, max(0.0, (self.vix - 10) / 40))
-        vix_zscore = (self.vix - np.mean(self.vix_history)) / max(np.std(self.vix_history), 0.1)
-        
-        # Regime (0=low vol, 1=normal, 2=high vol)
-        if self.vix < 15:
-            regime = 0
-        elif self.vix > 25:
-            regime = 2
-        else:
-            regime = 1
-        
-        # Price features
-        return_1m = (self.current_price - self.prev_price) / self.prev_price if self.prev_price > 0 else 0
-        return_5m = np.mean(self.return_history[-5:]) if len(self.return_history) >= 5 else 0
-        volatility_20 = np.std(self.return_history[-20:]) if len(self.return_history) >= 20 else 0.02
-        momentum_20 = (self.current_price - self.price_history[0]) / self.price_history[0] if self.price_history[0] > 0 else 0
-        
-        # ATM Vanna (key feature!) - varies with VIX
-        atm_vanna = self.atm_vanna * (1 + 0.1 * (self.vix - 18) / 10)
-        
-        # Build 32-feature observation
-        obs = np.array([
-            # VIX metrics (7)
-            (self.vix - 18) / 10,           # Normalized VIX
-            vix_ratio - 1.0,                # Centered ratio
-            vix_in_contango,
-            vix_change_1d * 10,             # Scaled
-            vix_percentile,
-            np.clip(vix_zscore, -3, 3),     # Clipped z-score
-            regime / 2.0,                   # Normalized regime
-            
-            # Time features (4)
-            sin_time,
-            cos_time,
-            sin_dow,
-            cos_dow,
-            
-            # Price features (4)
-            return_1m * 100,                # Scaled returns
-            return_5m * 100,
-            volatility_20 * 100,
-            momentum_20 * 10,
-            
-            # Greeks (7) - THE KEY FEATURES
-            self.atm_delta,                 # Already -1 to 0 for puts
-            self.atm_gamma * 10,            # Scaled
-            self.atm_theta * 10,            # Scaled (negative)
-            self.atm_vega,                  # 0 to 0.5 typically
-            atm_vanna,                      # ATM Vanna!
-            self.atm_charm * 10,            # Scaled
-            self.atm_volga,                 # Vega of vega
-            
-            # Position features (5)
-            pnl_pct * 10,                   # Scaled P&L
-            days_held / 30,                 # Normalized days
-            1.0 if self.position_size > 0 else 0.0,
-            self.capital / self.initial_capital,  # Capital ratio
-            min(self.trades / 10, 1.0),     # Trade count normalized
-            
-            # ATM Options (3)
-            self.atm_iv,                    # 0.1 to 0.5 typically
-            atm_vanna,                      # Duplicate for emphasis
-            min(1.0, abs(return_1m) * 100), # Volume proxy
-            
-            # Additional (2)
-            0.02,                           # Bid-ask spread placeholder
-            1.0,                            # Market open flag
-            
+        position_features = np.array([
+            pnl_pct * 10,                           # pnl_pct (scaled)
+            min(days_held, 1.0),                    # days_held (capped)
+            1.0 if self.position_size > 0 else 0.0, # position_flag
+            self.capital / self.initial_capital,    # capital_ratio
+            min(self.trades / 10, 1.0),             # trade_count (normalized)
+            0.02,                                   # bid_ask_spread (placeholder)
+            1.0,                                    # market_open
         ], dtype=np.float32)
         
-        return obs
+        # Combine: 25 market + 7 position = 32
+        obs = np.concatenate([market_features, position_features])
+        
+        # Ensure exactly 32 features
+        if len(obs) < self.N_FEATURES:
+            obs = np.pad(obs, (0, self.N_FEATURES - len(obs)))
+        elif len(obs) > self.N_FEATURES:
+            obs = obs[:self.N_FEATURES]
+        
+        return obs.astype(np.float32)
     
-    def _get_info(self) -> dict[str, Any]:
-        """Get current info dict."""
+    def _get_info(self) -> dict:
+        """Get info dict."""
+        idx = self.episode_start_idx + self.current_step
+        idx = min(idx, len(self.df) - 1)
+        row = self.df.iloc[idx]
+        
         return {
             "capital": self.capital,
             "position_size": self.position_size,
             "total_pnl": self.total_pnl,
             "trades": self.trades,
             "win_rate": self.winning_trades / self.trades if self.trades > 0 else 0,
-            "vix": self.vix,
-            "atm_vanna": self.atm_vanna
+            "symbol": self.current_symbol,
+            "step": self.current_step,
+            "data_idx": idx,
+            "price": row.get('close', 0),
+            "vix": row.get('vix', 0),
+            "vanna": row.get('vanna', 0),
         }
     
     def reset(
         self,
         seed: int | None = None,
-        options: dict[str, Any] | None = None
-    ) -> tuple[np.ndarray, dict[str, Any]]:
-        """Reset environment to initial state."""
+        options: dict | None = None
+    ) -> tuple[np.ndarray, dict]:
+        """Reset for new episode."""
         super().reset(seed=seed)
+        
+        # Optionally switch symbol
+        if options and 'symbol' in options:
+            if options['symbol'] in self.data:
+                self.current_symbol = options['symbol']
+                self.df = self.data[self.current_symbol]
+        else:
+            # Random symbol selection
+            self.current_symbol = np.random.choice(list(self.data.keys()))
+            self.df = self.data[self.current_symbol]
+        
         self._reset_state()
+        self.episode_start_idx = self._sample_episode_start()
         
         return self._get_obs(), self._get_info()
     
     def step(
         self,
         action: int
-    ) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
-        """
-        Execute one step in the environment.
-        
-        Returns: (observation, reward, terminated, truncated, info)
-        """
+    ) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict]:
+        """Execute one step."""
         reward = 0.0
         terminated = False
         truncated = False
         
-        # Store previous price
-        self.prev_price = self.current_price
-        
-        # Simulate price movement
-        price_change = np.random.normal(0, self.price_volatility)
-        self.current_price *= (1 + price_change)
-        
-        # Simulate VIX movement (mean-reverting)
-        vix_change = np.random.normal(0, 0.5) - 0.05 * (self.vix - 18)
-        self.vix = max(10, min(50, self.vix + vix_change))
-        self.vix3m = max(12, min(45, self.vix3m + np.random.normal(0, 0.3)))
-        
-        # Update histories
-        self.vix_history.append(self.vix)
-        self.vix_history = self.vix_history[-20:]
-        self.price_history.append(self.current_price)
-        self.price_history = self.price_history[-20:]
-        self.return_history.append(price_change)
-        self.return_history = self.return_history[-20:]
-        
-        # Update Greeks based on VIX and price
-        self._update_greeks()
+        idx = self.episode_start_idx + self.current_step
+        idx = min(idx, len(self.df) - 1)
+        current_price = self.df.iloc[idx]['close']
         
         # Execute action
         if action == 0:  # HOLD
@@ -286,31 +241,28 @@ class TradingEnvironment(gym.Env):
             
         elif action == 1:  # OPEN
             if self.position_size == 0:
-                position_cost = self.capital * 0.1
-                if position_cost < self.capital:
-                    self.position_size = 1
-                    self.position_price = self.current_price
-                    self.capital -= position_cost * 0.01
-                    self.trades += 1
-                    reward = 0.01
-                else:
-                    reward = -0.1
+                self.position_size = 1
+                self.position_price = current_price
+                self.entry_step = self.current_step
+                self.capital -= current_price * 0.001  # Transaction cost
+                self.trades += 1
+                reward = 0.01
             else:
                 reward = -0.05
         
         elif action == 2:  # CLOSE
             if self.position_size > 0:
-                pnl = (self.current_price - self.position_price) / self.position_price
-                profit = pnl * self.capital * 0.1
+                pnl_pct = (current_price - self.position_price) / self.position_price
+                profit = pnl_pct * self.capital * 0.1
                 
                 self.capital += profit
                 self.total_pnl += profit
                 
                 if profit > 0:
                     self.winning_trades += 1
-                    reward = pnl * 10
+                    reward = pnl_pct * 10
                 else:
-                    reward = pnl * 5
+                    reward = pnl_pct * 5
                 
                 self.position_size = 0
                 self.position_price = 0.0
@@ -318,16 +270,27 @@ class TradingEnvironment(gym.Env):
                 reward = -0.05
         
         elif action == 3:  # INCREASE
-            reward = -0.001
+            if self.position_size > 0:
+                self.position_size += 1
+                reward = 0.005
+            else:
+                reward = -0.02
         
         elif action == 4:  # DECREASE
-            reward = -0.001
+            if self.position_size > 1:
+                self.position_size -= 1
+                reward = 0.005
+            else:
+                reward = -0.02
         
-        # Update step counter
+        # Advance step
         self.current_step += 1
         
-        # Check termination conditions
-        if self.current_step >= self.max_steps:
+        # Check termination
+        if self.current_step >= self.episode_length:
+            truncated = True
+        
+        if self.episode_start_idx + self.current_step >= len(self.df) - 1:
             truncated = True
         
         if self.capital <= 0:
@@ -336,42 +299,29 @@ class TradingEnvironment(gym.Env):
         
         return self._get_obs(), reward, terminated, truncated, self._get_info()
     
-    def _update_greeks(self) -> None:
-        """Update simulated ATM Greeks based on market conditions."""
-        # Greeks vary with VIX and price
-        vix_factor = self.vix / 18.0
-        
-        self.atm_delta = -0.50 + np.random.normal(0, 0.02)
-        self.atm_gamma = 0.03 * vix_factor + np.random.normal(0, 0.005)
-        self.atm_theta = -0.05 * vix_factor + np.random.normal(0, 0.01)
-        self.atm_vega = 0.15 * vix_factor + np.random.normal(0, 0.02)
-        
-        # Vanna increases with VIX (key insight!)
-        self.atm_vanna = 0.02 * vix_factor + np.random.normal(0, 0.005)
-        self.atm_charm = -0.01 + np.random.normal(0, 0.002)
-        self.atm_volga = 0.08 * vix_factor + np.random.normal(0, 0.01)
-        
-        self.atm_iv = 0.15 + 0.01 * (self.vix - 18) + np.random.normal(0, 0.01)
-    
-    def render(self) -> str | None:  # type: ignore[override]
-        """Render the environment."""
+    def render(self) -> str | None:
+        """Render environment."""
         if self.render_mode == "ansi":
+            info = self._get_info()
             return (
-                f"Step: {self.current_step}, Capital: ${self.capital:.2f}, "
-                f"Price: ${self.current_price:.2f}, VIX: {self.vix:.1f}, "
-                f"Position: {self.position_size}, P&L: ${self.total_pnl:.2f}, "
-                f"Vanna: {self.atm_vanna:.4f}"
+                f"Step {info['step']}/{self.episode_length} | "
+                f"{info['symbol']} ${info['price']:.2f} | "
+                f"VIX {info['vix']:.1f} | Vanna {info['vanna']:.4f} | "
+                f"Capital ${self.capital:.2f} | P&L ${self.total_pnl:.2f}"
             )
         return None
 
 
 def make_trading_env(
+    data_dir: str = "data/vanna_ml",
+    symbols: List[str] = None,
     initial_capital: float = 10000.0,
-    max_steps: int = 252
+    episode_length: int = 390
 ) -> TradingEnvironment:
-    """Factory function to create trading environment."""
+    """Factory function."""
     return TradingEnvironment(
+        data_dir=data_dir,
+        symbols=symbols,
         initial_capital=initial_capital,
-        max_steps=max_steps
+        episode_length=episode_length
     )
-
