@@ -21,26 +21,32 @@ class StrategySelector:
     weighted recommendations for the current environment.
     """
     
-    # Strategy priority by regime
-    REGIME_STRATEGIES: dict[str, list[str]] = {
-        RegimeClassifier.REGIME_TRENDING_UP: [
-            "BULL_PUT_SPREAD",
+    # Strategy priority by regime (numeric keys match RegimeClassifier)
+    # 0 = Low Vol, 1 = Normal, 2 = Elevated, 3 = High Vol, 4 = Crisis
+    REGIME_STRATEGIES: dict[int, list[str]] = {
+        0: [  # Low Vol - directional plays
             "POOR_MANS_COVERED_CALL",
-            "JADE_LIZARD"
-        ],
-        RegimeClassifier.REGIME_TRENDING_DOWN: [
-            "BEAR_CALL_SPREAD",
-            "PUT_DEBIT_SPREAD"
-        ],
-        RegimeClassifier.REGIME_RANGE_BOUND: [
-            "IRON_CONDOR",
-            "IRON_BUTTERFLY",
+            "BULL_PUT_SPREAD",
             "CALENDAR_SPREAD"
         ],
-        RegimeClassifier.REGIME_HIGH_VOL: [
-            "JADE_LIZARD",  # Good for high IV
-            "BULL_PUT_SPREAD",  # Premium selling
+        1: [  # Normal - balanced
+            "BULL_PUT_SPREAD",
+            "IRON_CONDOR",
+            "JADE_LIZARD"
+        ],
+        2: [  # Elevated - premium selling
+            "IRON_CONDOR",
+            "IRON_BUTTERFLY",
+            "JADE_LIZARD"
+        ],
+        3: [  # High Vol - defensive premium selling
+            "JADE_LIZARD",
+            "BULL_PUT_SPREAD",
             "BEAR_CALL_SPREAD"
+        ],
+        4: [  # Crisis - minimal or avoid
+            "BEAR_CALL_SPREAD",
+            "PUT_DEBIT_SPREAD"
         ]
     }
     
