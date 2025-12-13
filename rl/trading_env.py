@@ -1,8 +1,8 @@
 """
 Trading Environment for Reinforcement Learning.
 
-Uses REAL historical data from *_vanna.parquet files.
-32 features matching TradeSuccessPredictor.
+Uses REAL historical data from *_rl.parquet files (enriched).
+40 market features + 7 position features = 47 total features.
 """
 from typing import Any, SupportsFloat, Optional, List
 from pathlib import Path
@@ -20,15 +20,15 @@ class TradingEnvironment(gym.Env):
     """
     Gymnasium environment using REAL historical data.
     
-    Loads data from *_1min_vanna.parquet files and steps through it.
+    Loads data from *_1min_rl.parquet files (enriched with ML outputs).
     
-    State: 32 features (from parquet columns + position state)
+    State: 47 features (40 market + 7 position)
     Actions: 0=HOLD, 1=OPEN, 2=CLOSE, 3=INCREASE, 4=DECREASE
     """
     
     metadata = {"render_modes": ["human", "ansi"]}
     
-    # Market features from parquet (25)
+    # Market features from parquet (40 total)
     MARKET_FEATURES = [
         # VIX (7)
         'vix', 'vix_ratio', 'vix_in_contango', 'vix_change_1d',
@@ -41,6 +41,15 @@ class TradingEnvironment(gym.Env):
         'delta', 'gamma', 'theta', 'vega', 'vanna', 'charm', 'volga',
         # Options (3)
         'options_iv_atm', 'options_volume', 'options_put_call_ratio',
+        # ML Regime outputs (4)
+        'regime_ml', 'regime_adj_position', 'regime_adj_delta', 'regime_adj_dte',
+        # ML DTE outputs (2)
+        'optimal_dte', 'dte_confidence',
+        # ML Trade outputs (1)
+        'trade_prob',
+        # Binary signals (5)
+        'signal_high_prob', 'signal_low_vol', 'signal_crisis',
+        'signal_contango', 'signal_backwardation',
     ]
     
     # Position features added at runtime (7)
@@ -49,7 +58,9 @@ class TradingEnvironment(gym.Env):
         'trade_count', 'bid_ask_spread', 'market_open'
     ]
     
-    N_FEATURES = 32  # 25 market + 7 position
+    N_MARKET_FEATURES = 40
+    N_POSITION_FEATURES = 7
+    N_FEATURES = 47  # 40 market + 7 position
     
     def __init__(
         self,
@@ -84,20 +95,27 @@ class TradingEnvironment(gym.Env):
         self._reset_state()
     
     def _load_data(self) -> None:
-        """Load parquet files for all symbols."""
+        """Load parquet files for all symbols. Prefers *_rl.parquet, fallback to *_vanna.parquet."""
         self.data = {}
         
         for symbol in self.symbols:
-            filepath = self.data_dir / f"{symbol}_1min_vanna.parquet"
+            # Try enriched RL file first
+            rl_path = self.data_dir / f"{symbol}_1min_rl.parquet"
+            vanna_path = self.data_dir / f"{symbol}_1min_vanna.parquet"
             
-            if filepath.exists():
-                df = pd.read_parquet(filepath)
-                # Fill NaN
-                df = df.fillna(0)
-                self.data[symbol] = df
-                logger.info(f"Loaded {symbol}: {len(df):,} rows")
+            if rl_path.exists():
+                df = pd.read_parquet(rl_path)
+                logger.info(f"Loaded {symbol} (RL): {len(df):,} rows, {len(df.columns)} cols")
+            elif vanna_path.exists():
+                df = pd.read_parquet(vanna_path)
+                logger.info(f"Loaded {symbol} (Vanna): {len(df):,} rows")
             else:
-                logger.warning(f"File not found: {filepath}")
+                logger.warning(f"No data found for {symbol}")
+                continue
+            
+            # Fill NaN
+            df = df.fillna(0)
+            self.data[symbol] = df
         
         if not self.data:
             raise ValueError(f"No data found in {self.data_dir}")
