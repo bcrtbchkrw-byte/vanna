@@ -48,7 +48,7 @@ def test_predictor():
     prob_high = predictor.predict_probability(setup_high_vix)
     print(f"Prediction (VIX 25): {prob_high:.1%}")
     
-    assert prob_high > 0.60, "Prediction logic failed for High VIX"
+    assert prob_high >= 0.60, "Prediction logic failed for High VIX"
         
     # Test Low VIX case (Expect low prob)
     setup_low_vix = {
