@@ -1,239 +1,237 @@
 """
-Neural Gatekeeper for Vanna Trading Bot.
+Neural Gatekeeper - LSTM-based Market Predictor
 
-A neural network-based trade signal filter that predicts
-the probability of trade success based on market conditions,
-Greeks, and historical performance patterns.
-
-Uses TensorFlow for inference (trained model loaded from disk).
-Falls back to heuristic scoring if no trained model is available.
+Deep learning gatekeeper for trade filtering.
+Can host RL agent policy for action decisions.
 """
-import os
-from dataclasses import dataclass
-from typing import Any
-
+from typing import Optional, Dict, Any, Tuple
+from pathlib import Path
 import numpy as np
 
 from core.logger import get_logger
 
-
-@dataclass
-class GatekeeperInput:
-    """Input features for the gatekeeper model."""
-    symbol: str
-    strategy: str
-    vix: float
-    delta: float
-    theta: float
-    iv_rank: float
-    days_to_expiry: int
-    credit: float
-    width: float
-    current_price: float
-    sma_distance: float  # Distance from SMA50 as %
-
-
-@dataclass
-class GatekeeperResult:
-    """Result from gatekeeper analysis."""
-    approved: bool
-    probability: float
-    reason: str
-    confidence: str
+logger = get_logger()
 
 
 class NeuralGatekeeper:
     """
-    Neural network gatekeeper for filtering trade signals.
+    LSTM-based neural network for trade gatekeeping.
     
-    Uses a trained model (if available) or falls back to
-    rule-based heuristics for trade approval.
+    Uses TensorFlow/Keras for:
+    - Price direction prediction
+    - Trade probability gating
+    - RL policy integration
+    
+    Features:
+    - 32-feature input (matching TradingEnv)
+    - LSTM layers for temporal patterns
+    - TFLite export for Raspberry Pi
     """
     
-    # Approval thresholds
-    MIN_PROBABILITY = 0.55  # Minimum 55% success probability
-    HIGH_CONFIDENCE_THRESHOLD = 0.75
+    SEQUENCE_LENGTH = 60  # 60 minutes lookback
+    N_FEATURES = 32
     
-    def __init__(self, model_path: str | None = None) -> None:
-        self.logger = get_logger()
-        self.model_path = model_path or "models/gatekeeper.keras"
-        self._model: Any = None
-        self._model_loaded = False
+    def __init__(
+        self,
+        model_path: str = "data/models/neural_gatekeeper",
+        threshold: float = 0.6
+    ):
+        self.model_path = Path(model_path)
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        self.threshold = threshold
         
-        self._try_load_model()
+        self.model = None
+        self.scaler = None
+        
+        self._load_model()
+        logger.info(f"NeuralGatekeeper initialized (threshold={threshold})")
     
-    def _try_load_model(self) -> bool:
-        """Attempt to load the trained TensorFlow model."""
-        if not os.path.exists(self.model_path):
-            self.logger.info(
-                f"No trained model at {self.model_path}, using heuristic mode"
-            )
-            return False
+    def _load_model(self):
+        """Load trained model if exists."""
+        keras_path = self.model_path / "gatekeeper.keras"
+        
+        if keras_path.exists():
+            try:
+                import tensorflow as tf
+                self.model = tf.keras.models.load_model(str(keras_path))
+                logger.info(f"Loaded model from {keras_path}")
+            except Exception as e:
+                logger.warning(f"Could not load model: {e}")
+    
+    def build_model(self) -> Any:
+        """Build LSTM model architecture."""
+        try:
+            import tensorflow as tf
+            from tensorflow.keras import layers, models
+        except ImportError:
+            logger.error("TensorFlow not installed")
+            return None
+        
+        model = models.Sequential([
+            # Input: (batch, sequence_length, features)
+            layers.Input(shape=(self.SEQUENCE_LENGTH, self.N_FEATURES)),
+            
+            # LSTM layers
+            layers.LSTM(64, return_sequences=True, dropout=0.2),
+            layers.LSTM(32, dropout=0.2),
+            
+            # Dense layers
+            layers.Dense(16, activation='relu'),
+            layers.Dropout(0.3),
+            
+            # Output: probability
+            layers.Dense(1, activation='sigmoid')
+        ])
+        
+        model.compile(
+            optimizer='adam',
+            loss='binary_crossentropy',
+            metrics=['accuracy', 'AUC']
+        )
+        
+        self.model = model
+        logger.info("Built LSTM model")
+        logger.info(model.summary())
+        
+        return model
+    
+    def train(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        validation_split: float = 0.2,
+        epochs: int = 50,
+        batch_size: int = 32
+    ) -> Dict[str, float]:
+        """
+        Train the gatekeeper model.
+        
+        Args:
+            X: Input sequences (samples, seq_len, features)
+            y: Binary labels (0=bad trade, 1=good trade)
+            validation_split: Fraction for validation
+            epochs: Training epochs
+            batch_size: Batch size
+            
+        Returns:
+            Training metrics
+        """
+        if self.model is None:
+            self.build_model()
         
         try:
             import tensorflow as tf
-            self._model = tf.keras.models.load_model(self.model_path)
-            self._model_loaded = True
-            self.logger.info(f"Loaded gatekeeper model from {self.model_path}")
-            return True
         except ImportError:
-            self.logger.warning(
-                "TensorFlow not installed - using heuristic mode. "
-                "Install with: pip install tensorflow"
+            return {"error": "TensorFlow not installed"}
+        
+        logger.info(f"Training on {len(X)} samples...")
+        
+        # Callbacks
+        callbacks = [
+            tf.keras.callbacks.EarlyStopping(
+                patience=10,
+                restore_best_weights=True
+            ),
+            tf.keras.callbacks.ReduceLROnPlateau(
+                factor=0.5,
+                patience=5
             )
-            return False
-        except Exception as e:
-            self.logger.error(f"Failed to load model: {e}")
-            return False
+        ]
+        
+        history = self.model.fit(
+            X, y,
+            validation_split=validation_split,
+            epochs=epochs,
+            batch_size=batch_size,
+            callbacks=callbacks,
+            verbose=1
+        )
+        
+        # Save model
+        self.save()
+        
+        return {
+            "accuracy": float(history.history['accuracy'][-1]),
+            "val_accuracy": float(history.history.get('val_accuracy', [0])[-1]),
+            "auc": float(history.history.get('auc', [0])[-1])
+        }
     
-    def _prepare_features(self, inp: GatekeeperInput) -> np.ndarray:
-        """Convert input to feature array for model inference."""
-        # Strategy encoding (one-hot style score)
-        strategy_score = {
-            "BULL_PUT": 0.7,
-            "BEAR_CALL": 0.7,
-            "IRON_CONDOR": 0.8,
-            "JADE_LIZARD": 0.6,
-            "PMCC": 0.5,
-            "CREDIT_SPREAD": 0.7
-        }.get(inp.strategy.upper(), 0.5)
-        
-        features = np.array([
-            inp.vix / 50.0,  # Normalize VIX
-            abs(inp.delta),  # Delta magnitude
-            inp.theta * 10,  # Scale theta
-            inp.iv_rank / 100.0,  # IV rank as decimal
-            inp.days_to_expiry / 45.0,  # Normalize DTE
-            inp.credit / inp.width if inp.width > 0 else 0,  # ROI
-            inp.sma_distance,  # SMA distance
-            strategy_score  # Strategy suitability
-        ], dtype=np.float32)
-        
-        return features.reshape(1, -1)
-    
-    def _heuristic_score(self, inp: GatekeeperInput) -> float:
+    def predict(self, sequence: np.ndarray) -> float:
         """
-        Calculate probability using rule-based heuristics.
-        Used when no trained model is available.
-        """
-        score = 0.5  # Base score
-        
-        # VIX scoring - higher VIX better for premium selling
-        if 15 <= inp.vix <= 25:
-            score += 0.1  # Optimal range
-        elif inp.vix > 30:
-            score -= 0.1  # Too high, risky
-        elif inp.vix < 12:
-            score -= 0.05  # Low premium
-        
-        # Delta scoring - prefer lower delta for safety
-        delta_abs = abs(inp.delta)
-        if delta_abs <= 0.20:
-            score += 0.1
-        elif delta_abs <= 0.30:
-            score += 0.05
-        elif delta_abs > 0.40:
-            score -= 0.1
-        
-        # Theta scoring - positive theta is good
-        if inp.theta > 0:
-            score += min(inp.theta * 5, 0.1)
-        
-        # IV Rank scoring - higher IV rank better for selling
-        if inp.iv_rank >= 50:
-            score += 0.1
-        elif inp.iv_rank >= 30:
-            score += 0.05
-        elif inp.iv_rank < 20:
-            score -= 0.1
-        
-        # DTE scoring - prefer 30-45 DTE
-        if 30 <= inp.days_to_expiry <= 45:
-            score += 0.1
-        elif 21 <= inp.days_to_expiry < 30:
-            score += 0.05
-        elif inp.days_to_expiry < 14:
-            score -= 0.1
-        
-        # ROI scoring
-        roi = (inp.credit / inp.width * 100) if inp.width > 0 else 0
-        if roi >= 15:
-            score += 0.1
-        elif roi >= 10:
-            score += 0.05
-        elif roi < 5:
-            score -= 0.05
-        
-        # SMA distance scoring - prefer near SMA
-        if abs(inp.sma_distance) <= 0.02:
-            score += 0.05
-        elif abs(inp.sma_distance) > 0.05:
-            score -= 0.05
-        
-        return max(0.1, min(0.95, score))  # Clamp to valid range
-    
-    def evaluate(self, inp: GatekeeperInput) -> GatekeeperResult:
-        """
-        Evaluate a trade setup and return approval decision.
+        Predict trade success probability.
         
         Args:
-            inp: GatekeeperInput with trade setup details
+            sequence: (seq_len, features) or (1, seq_len, features)
             
         Returns:
-            GatekeeperResult with approval and probability
+            Probability 0-1
         """
-        if self._model_loaded and self._model is not None:
-            # Use neural network
-            features = self._prepare_features(inp)
-            probability = float(self._model.predict(features, verbose=0)[0][0])
-        else:
-            # Use heuristics
-            probability = self._heuristic_score(inp)
+        if self.model is None:
+            return 0.5  # Neutral if no model
         
-        # Determine approval
-        approved = probability >= self.MIN_PROBABILITY
+        # Ensure 3D shape
+        if len(sequence.shape) == 2:
+            sequence = sequence.reshape(1, *sequence.shape)
         
-        # Confidence level
-        if probability >= self.HIGH_CONFIDENCE_THRESHOLD:
-            confidence = "HIGH"
-        elif probability >= self.MIN_PROBABILITY:
-            confidence = "MEDIUM"
-        else:
-            confidence = "LOW"
-        
-        # Generate reason
-        if approved:
-            reason = f"Trade approved with {probability:.0%} success probability"
-        else:
-            reason = f"Trade rejected: {probability:.0%} < {self.MIN_PROBABILITY:.0%} threshold"
-        
-        result = GatekeeperResult(
-            approved=approved,
-            probability=probability,
-            reason=reason,
-            confidence=confidence
-        )
-        
-        self.logger.info(
-            f"Gatekeeper: {inp.symbol} {inp.strategy} -> "
-            f"{'✅' if approved else '❌'} {probability:.0%}"
-        )
-        
-        return result
+        prob = float(self.model.predict(sequence, verbose=0)[0, 0])
+        return prob
     
-    def batch_evaluate(
-        self, inputs: list[GatekeeperInput]
-    ) -> list[GatekeeperResult]:
-        """Evaluate multiple trade setups."""
-        return [self.evaluate(inp) for inp in inputs]
+    def should_trade(self, sequence: np.ndarray) -> Tuple[bool, float, str]:
+        """
+        Gatekeeper decision: Should we trade?
+        
+        Args:
+            sequence: Market data sequence
+            
+        Returns:
+            (should_trade, probability, reason)
+        """
+        prob = self.predict(sequence)
+        
+        if prob >= self.threshold:
+            return True, prob, f"✅ Pass: {prob:.1%} >= {self.threshold:.0%}"
+        else:
+            return False, prob, f"❌ Reject: {prob:.1%} < {self.threshold:.0%}"
+    
+    def save(self):
+        """Save model."""
+        if self.model is None:
+            return
+        
+        keras_path = self.model_path / "gatekeeper.keras"
+        self.model.save(str(keras_path))
+        logger.info(f"Saved model to {keras_path}")
+    
+    def export_tflite(self) -> Optional[Path]:
+        """Export to TFLite for Raspberry Pi."""
+        if self.model is None:
+            return None
+        
+        try:
+            import tensorflow as tf
+            
+            converter = tf.lite.TFLiteConverter.from_keras_model(self.model)
+            converter.optimizations = [tf.lite.Optimize.DEFAULT]
+            tflite_model = converter.convert()
+            
+            tflite_path = self.model_path / "gatekeeper.tflite"
+            with open(tflite_path, 'wb') as f:
+                f.write(tflite_model)
+            
+            logger.info(f"Exported TFLite to {tflite_path}")
+            return tflite_path
+            
+        except Exception as e:
+            logger.error(f"TFLite export failed: {e}")
+            return None
 
 
 # Singleton
-_gatekeeper: NeuralGatekeeper | None = None
+_gatekeeper: Optional[NeuralGatekeeper] = None
 
 
 def get_neural_gatekeeper() -> NeuralGatekeeper:
-    """Get global neural gatekeeper instance."""
+    """Get or create gatekeeper."""
     global _gatekeeper
     if _gatekeeper is None:
         _gatekeeper = NeuralGatekeeper()

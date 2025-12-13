@@ -1,191 +1,243 @@
 """
-PPO Agent for Vanna Trading Bot.
+PPO Agent for Options Trading
 
-Wraps stable-baselines3 PPO for trading decisions.
-Supports:
-- Training on historical/simulated data
-- Inference for live trading suggestions
-- Model persistence
+Uses stable-baselines3 PPO with vectorized multi-symbol environment.
+Trained on SPY, QQQ historical data with Vanna features.
 """
-import os
-from typing import Any
+from typing import Optional, Dict, Any
+from pathlib import Path
+import numpy as np
 
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import (
+    EvalCallback,
+    CheckpointCallback,
+    CallbackList
+)
+from stable_baselines3.common.vec_env import VecNormalize
+
+from rl.vec_env import make_vec_env, get_available_symbols
 from core.logger import get_logger
 
+logger = get_logger()
 
-class PPOTradingAgent:
+
+class TradingAgent:
     """
     PPO-based trading agent using stable-baselines3.
     
-    Used for learning optimal position sizing and timing
-    from market simulations.
+    Actions:
+    0 = HOLD
+    1 = OPEN position
+    2 = CLOSE position
+    3 = INCREASE position
+    4 = DECREASE position
     """
     
     def __init__(
         self,
-        model_path: str | None = None,
-        learning_rate: float = 0.0003,
+        model_path: str = "data/models/ppo_trading_agent",
+        learning_rate: float = 3e-4,
         n_steps: int = 2048,
         batch_size: int = 64,
-        n_epochs: int = 10
-    ) -> None:
-        self.logger = get_logger()
-        self.model_path = model_path or "models/ppo_trading.zip"
+        n_epochs: int = 10,
+        gamma: float = 0.99,
+        ent_coef: float = 0.01,
+        verbose: int = 1
+    ):
+        self.model_path = Path(model_path)
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        
         self.learning_rate = learning_rate
         self.n_steps = n_steps
         self.batch_size = batch_size
         self.n_epochs = n_epochs
-        self._model: Any = None
-        self._model_loaded = False
+        self.gamma = gamma
+        self.ent_coef = ent_coef
+        self.verbose = verbose
         
-        self._try_load_model()
+        self.model: Optional[PPO] = None
+        self.vec_env: Optional[VecNormalize] = None
+        
+        logger.info("TradingAgent initialized")
     
-    def _try_load_model(self) -> bool:
-        """Try to load a pre-trained model."""
-        if not os.path.exists(self.model_path):
-            self.logger.info(f"No trained model at {self.model_path}")
-            return False
+    def create_env(
+        self,
+        symbols: list = None,
+        n_envs_per_symbol: int = 1
+    ) -> VecNormalize:
+        """Create vectorized training environment."""
+        if symbols is None:
+            symbols = get_available_symbols()
         
-        try:
-            from stable_baselines3 import PPO
-            self._model = PPO.load(self.model_path)
-            self._model_loaded = True
-            self.logger.info(f"Loaded PPO model from {self.model_path}")
-            return True
-        except ImportError:
-            self.logger.warning(
-                "stable-baselines3 not installed. "
-                "Run: pip install stable-baselines3"
-            )
-            return False
-        except Exception as e:
-            self.logger.error(f"Failed to load model: {e}")
-            return False
+        self.vec_env = make_vec_env(
+            symbols=symbols,
+            n_envs_per_symbol=n_envs_per_symbol,
+            use_subproc=True,
+            normalize=True
+        )
+        
+        logger.info(f"Created env with {self.vec_env.num_envs} parallel environments")
+        return self.vec_env
+    
+    def create_model(self, env: VecNormalize = None) -> PPO:
+        """Create PPO model."""
+        if env is None:
+            env = self.vec_env or self.create_env()
+        
+        self.model = PPO(
+            policy="MlpPolicy",
+            env=env,
+            learning_rate=self.learning_rate,
+            n_steps=self.n_steps,
+            batch_size=self.batch_size,
+            n_epochs=self.n_epochs,
+            gamma=self.gamma,
+            ent_coef=self.ent_coef,
+            verbose=self.verbose,
+            tensorboard_log=str(self.model_path.parent / "tensorboard")
+        )
+        
+        logger.info(f"Created PPO model with MlpPolicy")
+        return self.model
     
     def train(
         self,
-        total_timesteps: int = 100000,
-        save_path: str | None = None
-    ) -> dict[str, Any]:
+        total_timesteps: int = 100_000,
+        eval_freq: int = 10_000,
+        n_eval_episodes: int = 5,
+        checkpoint_freq: int = 25_000
+    ) -> Dict[str, Any]:
         """
-        Train the agent on the trading environment.
+        Train the PPO agent.
         
         Args:
-            total_timesteps: Number of training steps
-            save_path: Where to save the trained model
-            
-        Returns:
-            Training statistics
+            total_timesteps: Total training steps
+            eval_freq: How often to evaluate
+            n_eval_episodes: Episodes per evaluation
+            checkpoint_freq: How often to save checkpoints
         """
-        try:
-            from stable_baselines3 import PPO
-
-            from rl.trading_env import make_trading_env
-
-            
-            # Create environment
-            env = make_trading_env()
-            
-            # Create or update model
-            if self._model is None:
-                self._model = PPO(
-                    "MlpPolicy",
-                    env,
-                    learning_rate=self.learning_rate,
-                    n_steps=self.n_steps,
-                    batch_size=self.batch_size,
-                    n_epochs=self.n_epochs,
-                    verbose=1
-                )
-            else:
-                self._model.set_env(env)
-            
-            # Train
-            self.logger.info(f"Starting training for {total_timesteps} timesteps")
-            self._model.learn(total_timesteps=total_timesteps)
-            
-            # Save
-            save_to = save_path or self.model_path
-            os.makedirs(os.path.dirname(save_to), exist_ok=True)
-            self._model.save(save_to)
-            self._model_loaded = True
-            
-            self.logger.info(f"Model saved to {save_to}")
-            
-            return {
-                "status": "success",
-                "timesteps": total_timesteps,
-                "model_path": save_to
-            }
-            
-        except ImportError:
-            self.logger.error("stable-baselines3 not available")
-            return {"status": "error", "reason": "missing dependency"}
-        except Exception as e:
-            self.logger.error(f"Training failed: {e}")
-            return {"status": "error", "reason": str(e)}
+        if self.model is None:
+            self.create_model()
+        
+        logger.info(f"Starting training for {total_timesteps:,} timesteps...")
+        
+        # Create evaluation env
+        eval_env = make_vec_env(
+            symbols=get_available_symbols()[:1],  # SPY only for eval
+            n_envs_per_symbol=1,
+            use_subproc=False,
+            normalize=True
+        )
+        
+        # Callbacks
+        callbacks = CallbackList([
+            EvalCallback(
+                eval_env,
+                best_model_save_path=str(self.model_path / "best"),
+                log_path=str(self.model_path / "logs"),
+                eval_freq=eval_freq,
+                n_eval_episodes=n_eval_episodes,
+                deterministic=True
+            ),
+            CheckpointCallback(
+                save_freq=checkpoint_freq,
+                save_path=str(self.model_path / "checkpoints"),
+                name_prefix="ppo_trading"
+            )
+        ])
+        
+        # Train
+        self.model.learn(
+            total_timesteps=total_timesteps,
+            callback=callbacks,
+            progress_bar=True
+        )
+        
+        # Save final model
+        self.save()
+        
+        logger.info("Training complete!")
+        
+        return {
+            "total_timesteps": total_timesteps,
+            "model_path": str(self.model_path)
+        }
     
-    def predict(self, observation: list[float]) -> tuple[int, float]:
-        """
-        Get action prediction for given observation.
+    def predict(self, obs: np.ndarray, deterministic: bool = True) -> int:
+        """Predict action for given observation."""
+        if self.model is None:
+            self.load()
         
-        Args:
-            observation: State observation [price_change, vix, delta, pnl, days, position]
-            
-        Returns:
-            Tuple of (action, confidence)
-        """
-        if not self._model_loaded or self._model is None:
-            # Fallback to heuristic
-            return self._heuristic_predict(observation)
-        
-        import numpy as np
-        obs_array = np.array(observation).reshape(1, -1)
-        action, _ = self._model.predict(obs_array, deterministic=True)
-        
-        return int(action[0]), 0.7  # Fixed confidence for now
+        action, _ = self.model.predict(obs, deterministic=deterministic)
+        return int(action)
     
-    def _heuristic_predict(self, observation: list[float]) -> tuple[int, float]:
-        """
-        Heuristic fallback when no model is available.
+    def save(self):
+        """Save model and normalizer."""
+        if self.model is None:
+            logger.warning("No model to save")
+            return
         
-        Simple rules:
-        - Open if VIX favorable and no position
-        - Close if profitable or stop-loss hit
-        """
-        _, vix_norm, _, pnl_pct, _, position_flag = observation
+        self.model.save(str(self.model_path / "ppo_trading"))
         
-        vix = vix_norm * 10 + 18  # Denormalize
-        has_position = position_flag > 0.5
+        if self.vec_env is not None:
+            self.vec_env.save(str(self.model_path / "vec_normalize.pkl"))
         
-        if has_position:
-            # Position management
-            if pnl_pct > 0.5:  # 50% profit
-                return 2, 0.8  # CLOSE with high confidence
-            elif pnl_pct < -0.3:  # 30% loss
-                return 2, 0.7  # CLOSE (stop loss)
-            else:
-                return 0, 0.5  # HOLD
-        else:
-            # Entry decision
-            if 15 <= vix <= 25:
-                return 1, 0.6  # OPEN in favorable conditions
-            else:
-                return 0, 0.6  # HOLD
+        logger.info(f"Saved model to {self.model_path}")
     
-    def get_action_name(self, action: int) -> str:
-        """Convert action number to readable name."""
-        actions = ["HOLD", "OPEN", "CLOSE", "INCREASE", "DECREASE"]
-        return actions[action] if 0 <= action < len(actions) else "UNKNOWN"
+    def load(self) -> bool:
+        """Load saved model."""
+        model_file = self.model_path / "ppo_trading.zip"
+        
+        if not model_file.exists():
+            logger.warning(f"Model not found: {model_file}")
+            return False
+        
+        # Load normalizer first if exists
+        norm_file = self.model_path / "vec_normalize.pkl"
+        if norm_file.exists():
+            self.vec_env = VecNormalize.load(str(norm_file), make_vec_env())
+        
+        self.model = PPO.load(str(model_file), env=self.vec_env)
+        logger.info(f"Loaded model from {model_file}")
+        
+        return True
 
 
-# Singleton
-_agent: PPOTradingAgent | None = None
+# Quick access function
+def get_trading_agent() -> TradingAgent:
+    """Get or create trading agent."""
+    return TradingAgent()
 
 
-def get_ppo_agent() -> PPOTradingAgent:
-    """Get global PPO agent instance."""
-    global _agent
-    if _agent is None:
-        _agent = PPOTradingAgent()
-    return _agent
+# Training script
+if __name__ == "__main__":
+    from core.logger import setup_logger
+    
+    try:
+        setup_logger(level="INFO")
+    except:
+        pass
+    
+    print("=" * 60)
+    print("PPO Trading Agent Training")
+    print("=" * 60)
+    
+    agent = TradingAgent()
+    
+    # Create environment
+    symbols = get_available_symbols()
+    print(f"Symbols: {symbols}")
+    
+    if not symbols:
+        print("No data files found!")
+        exit(1)
+    
+    agent.create_env(symbols=symbols)
+    agent.create_model()
+    
+    # Train (short run for testing)
+    print("\nStarting training...")
+    agent.train(total_timesteps=10_000)
+    
+    print("\n✅ Training complete!")
