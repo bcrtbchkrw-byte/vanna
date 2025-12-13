@@ -28,7 +28,7 @@ class TradingEnvironment(gym.Env):
     
     metadata = {"render_modes": ["human", "ansi"]}
     
-    # Market features from normalized *_rl.parquet (42 total)
+    # Market features from normalized *_rl.parquet (46 total)
     # NO OHLC, NO timestamp - all normalized/scaled
     MARKET_FEATURES = [
         # Time (6) - already normalized [-1, 1]
@@ -53,6 +53,8 @@ class TradingEnvironment(gym.Env):
         # Binary signals (5) - 0/1
         'signal_high_prob', 'signal_low_vol', 'signal_crisis',
         'signal_contango', 'signal_backwardation',
+        # Earnings features (4) - options behave differently near earnings!
+        'days_to_earnings', 'is_earnings_week', 'is_earnings_month', 'earnings_iv_multiplier',
     ]
     
     # Position features added at runtime (7)
@@ -61,9 +63,9 @@ class TradingEnvironment(gym.Env):
         'trade_count', 'bid_ask_spread', 'market_open'
     ]
     
-    N_MARKET_FEATURES = 42
+    N_MARKET_FEATURES = 46  # Updated: 42 + 4 earnings
     N_POSITION_FEATURES = 7
-    N_FEATURES = 49  # 42 market + 7 position
+    N_FEATURES = 53  # 46 market + 7 position
     
     def __init__(
         self,
