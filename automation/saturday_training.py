@@ -1,0 +1,321 @@
+"""
+Saturday Training Pipeline
+
+Orchestrates the complete weekly retraining workflow:
+1. Merge live data from SQLite to parquet
+2. Recalculate Greeks (vectorized)
+3. Train ML models (TradeSuccessPredictor, RegimeClassifier)
+4. Enrich data with ML outputs
+5. Train RL agent (PPO)
+
+Run every Saturday when markets are closed.
+"""
+import asyncio
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, Optional
+import time
+
+from core.logger import get_logger, setup_logger
+
+logger = get_logger()
+
+
+class SaturdayTrainingPipeline:
+    """
+    Complete retraining pipeline for Saturday execution.
+    
+    Steps:
+    1. merge_live_data()    - SQLite live_bars → *_1min.parquet
+    2. calculate_greeks()   - *_1min.parquet → *_1min_vanna.parquet
+    3. train_ml_models()    - Train TradeSuccessPredictor, RegimeClassifier
+    4. enrich_features()    - *_vanna.parquet → *_rl.parquet
+    5. train_rl_agent()     - PPO training on *_rl.parquet
+    """
+    
+    def __init__(
+        self,
+        data_dir: str = "data/vanna_ml",
+        models_dir: str = "data/models",
+        rl_timesteps: int = 100_000,
+        skip_rl: bool = False
+    ):
+        self.data_dir = Path(data_dir)
+        self.models_dir = Path(models_dir)
+        self.rl_timesteps = rl_timesteps
+        self.skip_rl = skip_rl
+        
+        self.results: Dict[str, Any] = {}
+        self.start_time: Optional[float] = None
+    
+    async def run(self) -> Dict[str, Any]:
+        """Execute complete training pipeline."""
+        self.start_time = time.time()
+        
+        logger.info("=" * 70)
+        logger.info("🗓️ SATURDAY TRAINING PIPELINE")
+        logger.info(f"   Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("=" * 70)
+        
+        try:
+            # Step 1: Merge live data
+            await self._step_merge_live_data()
+            
+            # Step 2: Calculate Greeks
+            await self._step_calculate_greeks()
+            
+            # Step 3: Train ML models
+            await self._step_train_ml_models()
+            
+            # Step 4: Enrich features
+            await self._step_enrich_features()
+            
+            # Step 5: Train RL agent
+            if not self.skip_rl:
+                await self._step_train_rl_agent()
+            else:
+                logger.info("⏭️ Skipping RL training (skip_rl=True)")
+            
+            self._log_summary()
+            
+        except Exception as e:
+            logger.error(f"❌ Pipeline failed: {e}")
+            self.results['error'] = str(e)
+            raise
+        
+        return self.results
+    
+    async def _step_merge_live_data(self):
+        """Step 1: Merge live SQLite data to parquet."""
+        logger.info("\n" + "=" * 50)
+        logger.info("📥 STEP 1: Merge Live Data")
+        logger.info("=" * 50)
+        
+        from automation.data_maintenance import get_maintenance_manager
+        
+        manager = get_maintenance_manager()
+        merge_results = await manager.merge_live_to_parquet()
+        
+        self.results['merge'] = merge_results
+        total_new = sum(v for v in merge_results.values() if v > 0)
+        logger.info(f"✅ Merged {total_new} new bars")
+    
+    async def _step_calculate_greeks(self):
+        """Step 2: Calculate Greeks using vectorized calculator."""
+        logger.info("\n" + "=" * 50)
+        logger.info("📐 STEP 2: Calculate Greeks")
+        logger.info("=" * 50)
+        
+        from ml.vectorized_greeks import VectorizedGreeksCalculator
+        
+        calculator = VectorizedGreeksCalculator()
+        symbols_processed = []
+        
+        # Process all *_1min.parquet files
+        for parquet_file in self.data_dir.glob("*_1min.parquet"):
+            if "_vanna" in parquet_file.name or "_rl" in parquet_file.name:
+                continue
+            
+            output_path = self.data_dir / f"{parquet_file.stem}_vanna.parquet"
+            
+            try:
+                calculator.process_parquet_file(str(parquet_file), str(output_path))
+                symbol = parquet_file.stem.split('_')[0]
+                symbols_processed.append(symbol)
+                logger.info(f"   ✅ {symbol}")
+            except Exception as e:
+                logger.error(f"   ❌ {parquet_file.name}: {e}")
+        
+        self.results['greeks'] = symbols_processed
+        logger.info(f"✅ Greeks calculated for {len(symbols_processed)} symbols")
+    
+    async def _step_train_ml_models(self):
+        """Step 3: Train ML models."""
+        logger.info("\n" + "=" * 50)
+        logger.info("🧠 STEP 3: Train ML Models")
+        logger.info("=" * 50)
+        
+        ml_results = {}
+        
+        # 3a. Train TradeSuccessPredictor
+        try:
+            from ml.trade_success_predictor import TradeSuccessPredictor
+            import pandas as pd
+            
+            logger.info("   Training TradeSuccessPredictor...")
+            
+            # Load all vanna data
+            dfs = []
+            for f in self.data_dir.glob("*_1min_vanna.parquet"):
+                df = pd.read_parquet(f)
+                dfs.append(df)
+            
+            if dfs:
+                combined = pd.concat(dfs, ignore_index=True)
+                predictor = TradeSuccessPredictor()
+                metrics = predictor.train(combined)
+                ml_results['trade_predictor'] = metrics
+                logger.info(f"   ✅ TradeSuccessPredictor: {metrics.get('accuracy', 0):.2%}")
+            
+        except Exception as e:
+            logger.error(f"   ❌ TradeSuccessPredictor failed: {e}")
+            ml_results['trade_predictor'] = {'error': str(e)}
+        
+        # 3b. Train RegimeClassifier
+        try:
+            from ml.regime_classifier import RegimeClassifier
+            import pandas as pd
+            
+            logger.info("   Training RegimeClassifier...")
+            
+            # Load vanna data
+            dfs = []
+            for f in self.data_dir.glob("*_1min_vanna.parquet"):
+                df = pd.read_parquet(f)
+                dfs.append(df)
+            
+            if dfs:
+                combined = pd.concat(dfs, ignore_index=True)
+                
+                # Synthetic labels from VIX levels
+                def vix_to_regime(vix):
+                    if vix < 15: return 0
+                    if vix < 20: return 1
+                    if vix < 25: return 2
+                    if vix < 35: return 3
+                    return 4
+                
+                combined['regime_target'] = combined['vix'].apply(vix_to_regime)
+                
+                classifier = RegimeClassifier()
+                metrics = classifier.train(combined, target_col='regime_target')
+                ml_results['regime_classifier'] = metrics
+                logger.info(f"   ✅ RegimeClassifier: {metrics.get('accuracy', 0):.2%}")
+            
+        except Exception as e:
+            logger.error(f"   ❌ RegimeClassifier failed: {e}")
+            ml_results['regime_classifier'] = {'error': str(e)}
+        
+        self.results['ml_training'] = ml_results
+    
+    async def _step_enrich_features(self):
+        """Step 4: Enrich data with ML outputs."""
+        logger.info("\n" + "=" * 50)
+        logger.info("🔧 STEP 4: Enrich Features")
+        logger.info("=" * 50)
+        
+        from ml.feature_enricher import FeatureEnricher
+        
+        enricher = FeatureEnricher()
+        enrich_results = enricher.process_all()
+        
+        self.results['enrich'] = enrich_results
+        logger.info(f"✅ Enriched {len(enrich_results)} symbol files")
+    
+    async def _step_train_rl_agent(self):
+        """Step 5: Train RL agent."""
+        logger.info("\n" + "=" * 50)
+        logger.info("🤖 STEP 5: Train RL Agent")
+        logger.info("=" * 50)
+        
+        try:
+            from rl.ppo_agent import TradingAgent
+            from rl.vec_env import get_available_symbols
+            
+            symbols = get_available_symbols()
+            
+            if not symbols:
+                logger.warning("No RL data available")
+                self.results['rl_training'] = {'error': 'No data'}
+                return
+            
+            logger.info(f"   Symbols: {symbols}")
+            logger.info(f"   Timesteps: {self.rl_timesteps:,}")
+            
+            agent = TradingAgent()
+            agent.create_env(symbols=symbols)
+            agent.create_model()
+            
+            train_result = agent.train(
+                total_timesteps=self.rl_timesteps,
+                eval_freq=10_000,
+                checkpoint_freq=25_000
+            )
+            
+            self.results['rl_training'] = train_result
+            logger.info(f"✅ RL training complete: {train_result}")
+            
+        except Exception as e:
+            logger.error(f"❌ RL training failed: {e}")
+            self.results['rl_training'] = {'error': str(e)}
+    
+    def _log_summary(self):
+        """Log final summary."""
+        elapsed = time.time() - self.start_time
+        
+        logger.info("\n" + "=" * 70)
+        logger.info("📊 TRAINING COMPLETE")
+        logger.info("=" * 70)
+        logger.info(f"   Duration: {elapsed/60:.1f} minutes")
+        logger.info(f"   Merge: {self.results.get('merge', {})}")
+        logger.info(f"   Greeks: {self.results.get('greeks', [])}")
+        logger.info(f"   ML: {self.results.get('ml_training', {})}")
+        logger.info(f"   Enrich: {self.results.get('enrich', {})}")
+        logger.info(f"   RL: {self.results.get('rl_training', {})}")
+        logger.info("=" * 70)
+
+
+def should_run_saturday_training() -> bool:
+    """Check if today is Saturday."""
+    return datetime.now().weekday() == 5
+
+
+async def run_saturday_training(
+    skip_rl: bool = False,
+    rl_timesteps: int = 100_000
+) -> Dict[str, Any]:
+    """
+    Run complete Saturday training pipeline.
+    
+    Args:
+        skip_rl: Skip RL training (useful for quick tests)
+        rl_timesteps: Number of RL training steps
+        
+    Returns:
+        Results dict
+    """
+    pipeline = SaturdayTrainingPipeline(
+        skip_rl=skip_rl,
+        rl_timesteps=rl_timesteps
+    )
+    return await pipeline.run()
+
+
+# CLI entry point
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Saturday Training Pipeline")
+    parser.add_argument("--skip-rl", action="store_true", help="Skip RL training")
+    parser.add_argument("--rl-steps", type=int, default=100_000, help="RL timesteps")
+    parser.add_argument("--force", action="store_true", help="Run even if not Saturday")
+    args = parser.parse_args()
+    
+    try:
+        setup_logger(level="INFO")
+    except:
+        pass
+    
+    logger = get_logger()
+    
+    # Check if Saturday
+    if not args.force and not should_run_saturday_training():
+        logger.warning(f"Today is not Saturday (weekday={datetime.now().weekday()})")
+        logger.info("Use --force to run anyway")
+        exit(0)
+    
+    # Run pipeline
+    asyncio.run(run_saturday_training(
+        skip_rl=args.skip_rl,
+        rl_timesteps=args.rl_steps
+    ))
