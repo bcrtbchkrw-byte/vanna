@@ -340,20 +340,37 @@ async def main():
     logger.info("=" * 60)
     
     try:
-        # Run the main trading loop
-        await main_loop(
-            logger=logger,
-            config=config,
-            db=db,
-            ibkr_conn=ibkr_conn,
-            data_fetcher=data_fetcher,
-            data_pipeline=data_pipeline,
-            regime_classifier=regime_classifier,
-            strategy_selector=strategy_selector,
-            greeks_validator=greeks_validator,
-            position_sizer=position_sizer,
-            maintenance_manager=maintenance_manager
-        )
+        # NEW: Use TradingPipeline instead of old main_loop
+        from core.trading_pipeline import get_trading_pipeline
+        
+        pipeline = get_trading_pipeline()
+        
+        # Morning routine: Screener → ML → Top 10
+        logger.info("🌅 Running morning screening and ML filtering...")
+        top_10 = await pipeline.run_morning_routine()
+        
+        if top_10:
+            logger.info(f"🎯 Today's Top 10 for RL: {top_10}")
+            
+            # Run RL loop continuously during market hours
+            await pipeline.run_rl_loop()
+        else:
+            logger.warning("No stocks selected - running minimal loop")
+            
+            # Fallback: Run old main_loop for maintenance tasks only
+            await main_loop(
+                logger=logger,
+                config=config,
+                db=db,
+                ibkr_conn=ibkr_conn,
+                data_fetcher=data_fetcher,
+                data_pipeline=data_pipeline,
+                regime_classifier=regime_classifier,
+                strategy_selector=strategy_selector,
+                greeks_validator=greeks_validator,
+                position_sizer=position_sizer,
+                maintenance_manager=maintenance_manager
+            )
     finally:
         # Cleanup
         logger.info("🧹 Cleaning up...")
