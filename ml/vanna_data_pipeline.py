@@ -46,7 +46,7 @@ class VannaDataPipeline:
     
     # IBKR limits
     MAX_BARS_PER_REQUEST = 1000  # Safe limit to avoid pacing
-    REQUEST_DELAY = 0.5  # Seconds between requests
+    REQUEST_DELAY = 20  # Seconds between requests (IBKR pacing - aggressive limit)
     
     def __init__(
         self,
@@ -60,7 +60,7 @@ class VannaDataPipeline:
             data_dir: Directory for historical data files
             db_path: Path to SQLite database
         """
-        self.connection = get_ibkr_connection()
+        self.connection = None  # Will be initialized on first use
         self.data_fetcher = get_data_fetcher()
         self.vanna_calc = get_vanna_calculator()
         self.feature_eng = get_feature_engineering()
@@ -68,6 +68,12 @@ class VannaDataPipeline:
         
         self._running = False
         logger.info("VannaDataPipeline initialized")
+    
+    async def _get_connection(self):
+        """Get IBKR connection (lazy async initialization)."""
+        if self.connection is None:
+            self.connection = await get_ibkr_connection()
+        return self.connection
     
     async def fetch_historical_intraday(
         self,
@@ -92,7 +98,8 @@ class VannaDataPipeline:
         logger.info(f"Fetching {days} days of {bar_size} data for {symbol}...")
         
         all_bars = []
-        ib = self.connection.get_client()
+        conn = await self._get_connection()
+        ib = conn.ib if conn.is_connected else None
         
         if not ib or not ib.isConnected():
             logger.error("IBKR not connected")
@@ -114,7 +121,7 @@ class VannaDataPipeline:
         contract = contracts[0]
         
         # Fetch in chunks (IBKR allows max ~60 days per request for 1-min data)
-        chunk_days = 30  # Conservative chunk size
+        chunk_days = 5  # Small chunks to avoid IBKR pacing violations
         end_date = datetime.now()
         
         for i in range(0, days, chunk_days):
@@ -151,7 +158,7 @@ class VannaDataPipeline:
                 
             except Exception as e:
                 logger.error(f"Error fetching chunk {i}: {e}")
-                await asyncio.sleep(2)  # Longer delay on error
+                await asyncio.sleep(5)  # Longer delay on error
         
         if not all_bars:
             logger.warning(f"No bars fetched for {symbol}")
@@ -181,7 +188,8 @@ class VannaDataPipeline:
         """
         logger.info(f"Fetching {years} years of daily data for {symbol}...")
         
-        ib = self.connection.get_client()
+        conn = await self._get_connection()
+        ib = conn.ib if conn.is_connected else None
         
         if not ib or not ib.isConnected():
             logger.error("IBKR not connected")
@@ -366,7 +374,7 @@ class VannaDataPipeline:
         for symbol in self.SYMBOLS:
             try:
                 # Get current quote
-                quote = self.data_fetcher.get_stock_quote(symbol)
+                quote = await self.data_fetcher.get_stock_quote(symbol)
                 
                 if quote:
                     bar_data = {
@@ -403,7 +411,7 @@ class VannaDataPipeline:
     async def _get_vix_value(self) -> Optional[float]:
         """Get current VIX value."""
         try:
-            return self.data_fetcher.get_vix()
+            return await self.data_fetcher.get_vix()
         except Exception as e:
             logger.debug(f"Could not get VIX: {e}")
             return None
@@ -411,7 +419,8 @@ class VannaDataPipeline:
     async def _get_vix3m_value(self) -> Optional[float]:
         """Get current VIX3M value."""
         try:
-            ib = self.connection.get_client()
+            conn = await self._get_connection()
+            ib = conn.ib if conn and conn.is_connected else None
             if not ib or not ib.isConnected():
                 return None
             
@@ -421,7 +430,7 @@ class VannaDataPipeline:
             
             if contracts:
                 ticker = ib.reqMktData(contracts[0], '', False, False)
-                await asyncio.sleep(1)
+                await asyncio.sleep(3)  # Wait for VIX3M data
                 value = ticker.last if ticker.last else ticker.close
                 ib.cancelMktData(contracts[0])
                 return value

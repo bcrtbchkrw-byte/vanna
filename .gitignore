@@ -22,9 +22,11 @@ ENV/
 logs/*.log
 *.log
 
-# Database
+# Database & Data (IMPORTANT: Contains valuable ML training data!)
+data/
 data/*.db
 *.sqlite3
+*.parquet
 
 # Docker
 .docker/

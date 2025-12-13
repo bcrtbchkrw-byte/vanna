@@ -10,6 +10,7 @@ services:
     env_file:
       - .env
     environment:
+      - TZ=Europe/Prague
       - TWS_USERID=${IBKR_USERNAME}
       - TWS_PASSWORD=${IBKR_PASSWORD}
       - TRADING_MODE=${TRADING_MODE:-paper}
@@ -33,6 +34,7 @@ services:
     depends_on:
       - ib-gateway
     environment:
+      - TZ=Europe/Prague
       - IBKR_HOST=127.0.0.1
       - IBKR_PORT=4002
       - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-999}

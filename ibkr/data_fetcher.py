@@ -62,7 +62,7 @@ class IBKRDataFetcher:
             await conn.ib.qualifyContractsAsync(contract)
             
             ticker = conn.ib.reqMktData(contract, '', False, False)
-            await asyncio.sleep(2)  # Wait for data
+            await asyncio.sleep(3)  # Wait for data (IBKR pacing)
             
             quote = {
                 "symbol": symbol,
@@ -107,7 +107,7 @@ class IBKRDataFetcher:
             await conn.ib.qualifyContractsAsync(vix)
             
             ticker = conn.ib.reqMktData(vix, '', False, False)
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)  # Wait for VIX data
             
             vix_value = ticker.last if ticker.last and ticker.last > 0 else ticker.close
             
@@ -158,7 +158,7 @@ class IBKRDataFetcher:
             
             # Get current price
             ticker = conn.ib.reqMktData(stock, '', False, False)
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)  # Wait for option chain data
             current_price = ticker.last or ticker.close
             conn.ib.cancelMktData(stock)
             
@@ -239,7 +239,7 @@ class IBKRDataFetcher:
             
             # 106 = Option Implied Vol, 101 = Open Interest
             ticker = conn.ib.reqMktData(contract, '101,106', False, False)
-            await asyncio.sleep(2)
+            await asyncio.sleep(4)  # Wait for Greeks data
             
             greeks = ticker.modelGreeks or ticker.lastGreeks
             

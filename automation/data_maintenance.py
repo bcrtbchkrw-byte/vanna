@@ -1,0 +1,395 @@
+"""
+Data Maintenance Script
+
+Automated maintenance for ML training data:
+- Checks for gaps in historical data
+- Patches missing data from IBKR
+- Runs monthly on 1st day of month
+
+Usage:
+    python -m automation.data_maintenance
+"""
+import asyncio
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import List, Dict, Tuple, Optional
+
+import pandas as pd
+import numpy as np
+
+from core.logger import get_logger, setup_logger
+from ml.vanna_data_pipeline import get_vanna_pipeline
+from ml.data_storage import get_data_storage
+
+logger = get_logger()
+
+
+class DataMaintenanceManager:
+    """
+    Manages data integrity and gap patching.
+    
+    Features:
+    - Detects gaps in timestamp sequences (> 1 minute)
+    - Downloads missing data from IBKR
+    - Validates and merges patched data
+    - Global lock to prevent concurrent downloads
+    """
+    
+    SYMBOLS = ['SPY', 'QQQ', 'IWM', 'GLD', 'TLT']
+    MAX_GAP_MINUTES = 1  # Gaps larger than this are flagged
+    
+    # Global lock to prevent double downloads
+    _download_lock: Optional[asyncio.Lock] = None
+    _downloading: bool = False
+    
+    def __init__(self):
+        self.pipeline = get_vanna_pipeline()
+        self.storage = get_data_storage()
+        
+        # Initialize lock if not exists
+        if DataMaintenanceManager._download_lock is None:
+            DataMaintenanceManager._download_lock = asyncio.Lock()
+        
+        logger.info("DataMaintenanceManager initialized")
+    
+    async def check_historical_data_exists(self) -> Dict[str, bool]:
+        """
+        Check if historical data exists for all symbols.
+        
+        Returns:
+            Dict of symbol -> has_data
+        """
+        results = {}
+        
+        for symbol in self.SYMBOLS:
+            # Check parquet file
+            df = self.storage.load_historical_parquet(symbol, '1min')
+            
+            if df is not None and len(df) > 0:
+                results[symbol] = True
+                logger.info(f"✅ {symbol}: {len(df):,} bars found")
+            else:
+                results[symbol] = False
+                logger.warning(f"❌ {symbol}: No historical data")
+        
+        return results
+    
+    async def ensure_historical_data(self) -> bool:
+        """
+        Ensure historical data exists, download if missing.
+        
+        Called on startup - checks and downloads missing data.
+        Uses lock to prevent concurrent downloads.
+        
+        Returns:
+            True if all data is available
+        """
+        # Check if already downloading (non-blocking check)
+        if DataMaintenanceManager._downloading:
+            logger.info("⏸️ Download already in progress, skipping...")
+            return True
+        
+        # Acquire lock for downloading
+        async with DataMaintenanceManager._download_lock:
+            # Double check after acquiring lock
+            if DataMaintenanceManager._downloading:
+                logger.info("⏸️ Download already in progress, skipping...")
+                return True
+            
+            DataMaintenanceManager._downloading = True
+            
+            try:
+                logger.info("=" * 60)
+                logger.info("🔍 Checking historical data...")
+                logger.info("=" * 60)
+                
+                existing = await self.check_historical_data_exists()
+                missing_symbols = [s for s, exists in existing.items() if not exists]
+                
+                if not missing_symbols:
+                    logger.info("✅ All historical data present")
+                    return True
+                
+                logger.info(f"📥 Downloading missing data for: {', '.join(missing_symbols)}")
+                logger.info("⚠️ This will take a while with 20s delay per request...")
+                
+                for symbol in missing_symbols:
+                    try:
+                        # Download 550 days of 1-min data
+                        await self.pipeline.process_historical_data(symbol, days=550, save=True)
+                        
+                        # Download 10 years of daily data
+                        daily_df = await self.pipeline.fetch_historical_daily(symbol, years=10)
+                        if daily_df is not None:
+                            daily_df = self.pipeline.feature_eng.process_all_features(daily_df)
+                            self.storage.save_historical_parquet(daily_df, symbol, '1day')
+                        
+                        logger.info(f"✅ Downloaded historical data for {symbol}")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Failed to download {symbol}: {e}")
+                
+                return True
+                
+            finally:
+                DataMaintenanceManager._downloading = False
+    
+    def find_gaps(
+        self,
+        df: pd.DataFrame,
+        max_gap_minutes: int = 1
+    ) -> List[Dict]:
+        """
+        Find timestamp gaps in data.
+        
+        Args:
+            df: DataFrame with 'timestamp' column
+            max_gap_minutes: Maximum allowed gap (default 1 min)
+            
+        Returns:
+            List of gap info dicts with start, end, gap_minutes
+        """
+        if df is None or len(df) < 2:
+            return []
+        
+        # Ensure sorted by timestamp
+        df = df.sort_values('timestamp').reset_index(drop=True)
+        
+        gaps = []
+        
+        for i in range(1, len(df)):
+            prev_ts = pd.to_datetime(df.loc[i-1, 'timestamp'])
+            curr_ts = pd.to_datetime(df.loc[i, 'timestamp'])
+            
+            gap_minutes = (curr_ts - prev_ts).total_seconds() / 60
+            
+            # During market hours (9:30 - 16:00), gaps > 1 min are suspicious
+            # Overnight gaps are expected
+            if gap_minutes > max_gap_minutes:
+                # Check if it's an overnight gap (market closed)
+                is_overnight = (
+                    prev_ts.hour >= 16 or  # After market close
+                    curr_ts.hour < 9 or    # Before market open
+                    (prev_ts.hour >= 16 and curr_ts.date() > prev_ts.date())  # Next day
+                )
+                
+                # Weekend gap
+                is_weekend = (
+                    prev_ts.weekday() == 4 and curr_ts.weekday() == 0  # Fri -> Mon
+                )
+                
+                if not is_overnight and not is_weekend:
+                    gaps.append({
+                        'start': prev_ts,
+                        'end': curr_ts,
+                        'gap_minutes': gap_minutes,
+                        'index_start': i - 1,
+                        'index_end': i
+                    })
+        
+        return gaps
+    
+    async def patch_gaps(
+        self,
+        symbol: str,
+        gaps: List[Dict]
+    ) -> int:
+        """
+        Patch data gaps by downloading from IBKR.
+        
+        Args:
+            symbol: Symbol to patch
+            gaps: List of gap info dicts
+            
+        Returns:
+            Number of gaps patched
+        """
+        if not gaps:
+            return 0
+        
+        patched = 0
+        
+        for gap in gaps:
+            try:
+                start = gap['start']
+                end = gap['end']
+                
+                logger.info(f"🔧 Patching {symbol} gap: {start} to {end} ({gap['gap_minutes']:.0f} min)")
+                
+                # Calculate days to fetch
+                gap_days = (end - start).days + 1
+                
+                # Fetch missing data
+                conn = await self.pipeline._get_connection()
+                if not conn or not conn.is_connected:
+                    logger.error("IBKR not connected, cannot patch")
+                    continue
+                
+                ib = conn.ib
+                
+                from ib_insync import Stock
+                contract = Stock(symbol, 'SMART', 'USD')
+                await ib.qualifyContractsAsync(contract)
+                
+                # Fetch bars for the gap period
+                bars = await ib.reqHistoricalDataAsync(
+                    contract,
+                    endDateTime=end + timedelta(hours=1),
+                    durationStr=f"{max(1, gap_days)} D",
+                    barSizeSetting='1 min',
+                    whatToShow='TRADES',
+                    useRTH=True,
+                    formatDate=1
+                )
+                
+                if bars:
+                    # Filter to only gap period
+                    patch_df = pd.DataFrame([{
+                        'timestamp': bar.date,
+                        'open': bar.open,
+                        'high': bar.high,
+                        'low': bar.low,
+                        'close': bar.close,
+                        'volume': bar.volume,
+                        'symbol': symbol
+                    } for bar in bars])
+                    
+                    patch_df['timestamp'] = pd.to_datetime(patch_df['timestamp'])
+                    patch_df = patch_df[
+                        (patch_df['timestamp'] > start) & 
+                        (patch_df['timestamp'] < end)
+                    ]
+                    
+                    if len(patch_df) > 0:
+                        # Merge with existing data
+                        existing_df = self.storage.load_historical_parquet(symbol, '1min')
+                        if existing_df is not None:
+                            merged = pd.concat([existing_df, patch_df], ignore_index=True)
+                            merged = merged.drop_duplicates(subset=['timestamp']).sort_values('timestamp')
+                            
+                            # Re-apply features
+                            merged = self.pipeline.feature_eng.process_all_features(merged)
+                            
+                            self.storage.save_historical_parquet(merged, symbol, '1min')
+                            patched += 1
+                            
+                            logger.info(f"✅ Patched {len(patch_df)} bars for {symbol}")
+                
+                await asyncio.sleep(3)  # Rate limiting (IBKR pacing)
+                
+            except Exception as e:
+                logger.error(f"Error patching gap for {symbol}: {e}")
+        
+        return patched
+    
+    async def run_maintenance(self) -> Dict[str, any]:
+        """
+        Run full data maintenance.
+        
+        Checks all symbols for gaps and patches them.
+        
+        Returns:
+            Summary of maintenance results
+        """
+        logger.info("=" * 60)
+        logger.info("🔧 Starting Data Maintenance")
+        logger.info(f"📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        logger.info("=" * 60)
+        
+        results = {
+            'symbols_checked': 0,
+            'total_gaps_found': 0,
+            'gaps_patched': 0,
+            'errors': []
+        }
+        
+        for symbol in self.SYMBOLS:
+            try:
+                logger.info(f"\n📊 Checking {symbol}...")
+                
+                # Load data
+                df = self.storage.load_historical_parquet(symbol, '1min')
+                
+                if df is None or len(df) == 0:
+                    logger.warning(f"No data for {symbol}, downloading full history...")
+                    await self.pipeline.process_historical_data(symbol, days=550, save=True)
+                    results['symbols_checked'] += 1
+                    continue
+                
+                # Find gaps
+                gaps = self.find_gaps(df)
+                results['symbols_checked'] += 1
+                results['total_gaps_found'] += len(gaps)
+                
+                if gaps:
+                    logger.warning(f"Found {len(gaps)} gaps in {symbol}")
+                    
+                    # Patch gaps
+                    patched = await self.patch_gaps(symbol, gaps)
+                    results['gaps_patched'] += patched
+                else:
+                    logger.info(f"✅ {symbol}: No gaps found ({len(df):,} bars)")
+                
+            except Exception as e:
+                logger.error(f"Error checking {symbol}: {e}")
+                results['errors'].append(f"{symbol}: {str(e)}")
+        
+        # Summary
+        logger.info("\n" + "=" * 60)
+        logger.info("📋 Maintenance Summary")
+        logger.info("=" * 60)
+        logger.info(f"   Symbols checked: {results['symbols_checked']}")
+        logger.info(f"   Gaps found: {results['total_gaps_found']}")
+        logger.info(f"   Gaps patched: {results['gaps_patched']}")
+        if results['errors']:
+            logger.warning(f"   Errors: {len(results['errors'])}")
+        logger.info("=" * 60)
+        
+        return results
+    
+    def should_run_monthly_maintenance(self) -> bool:
+        """Check if today is maintenance day (1st of month)."""
+        return datetime.now().day == 1
+
+
+# Singleton
+_maintenance_manager: Optional[DataMaintenanceManager] = None
+
+
+def get_maintenance_manager() -> DataMaintenanceManager:
+    """Get or create maintenance manager."""
+    global _maintenance_manager
+    if _maintenance_manager is None:
+        _maintenance_manager = DataMaintenanceManager()
+    return _maintenance_manager
+
+
+async def run_startup_check():
+    """Run on application startup."""
+    manager = get_maintenance_manager()
+    await manager.ensure_historical_data()
+
+
+async def run_monthly_maintenance():
+    """Run monthly maintenance (call on 1st of each month)."""
+    manager = get_maintenance_manager()
+    return await manager.run_maintenance()
+
+
+# CLI Entry point
+if __name__ == "__main__":
+    setup_logger(level="INFO")
+    logger = get_logger()
+    
+    async def main():
+        manager = get_maintenance_manager()
+        
+        # Check for existing data
+        logger.info("Checking historical data...")
+        await manager.ensure_historical_data()
+        
+        # Run maintenance
+        logger.info("Running maintenance...")
+        await manager.run_maintenance()
+    
+    asyncio.run(main())
