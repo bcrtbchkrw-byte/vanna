@@ -222,6 +222,7 @@ def process_all_historical_data(data_dir: str = "data/vanna_ml"):
     Process all historical parquet files and add Greeks.
     
     Creates *_vanna.parquet files with 7 additional Greek columns.
+    Processes all *_1min.parquet files that don't already have _vanna suffix.
     """
     data_dir = Path(data_dir)
     calculator = VectorizedGreeksCalculator()
@@ -236,11 +237,22 @@ def process_all_historical_data(data_dir: str = "data/vanna_ml"):
     
     logger.info(f"Found {len(parquet_files)} files to process")
     
+    processed = 0
     for filepath in parquet_files:
+        output_path = data_dir / f"{filepath.stem}_vanna.parquet"
+        
+        # Skip if already processed
+        if output_path.exists():
+            logger.info(f"⏭️ {output_path.name} already exists, skipping")
+            continue
+        
         try:
-            calculator.process_parquet_file(str(filepath))
+            calculator.process_parquet_file(str(filepath), str(output_path))
+            processed += 1
         except Exception as e:
             logger.error(f"Error processing {filepath}: {e}")
+    
+    logger.info(f"✅ Processed {processed} files")
 
 
 # CLI entry point
@@ -258,5 +270,5 @@ if __name__ == "__main__":
         calc = VectorizedGreeksCalculator()
         calc.process_parquet_file(input_file, output_file)
     else:
-        # Process all files
+        # Process all files in data/vanna_ml/
         process_all_historical_data()
