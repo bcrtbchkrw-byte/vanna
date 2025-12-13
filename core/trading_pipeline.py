@@ -85,6 +85,11 @@ class TradingPipeline:
         self._rl_interval_seconds: int = 60  # Check every minute
         self._min_rl_confidence: float = 0.7  # Min confidence for signal
         
+        # Dynamic Top 10 refresh
+        self._refresh_interval_minutes: int = 30  # Re-evaluate Top 10 every 30 min
+        self._last_refresh_time: Optional[datetime] = None
+        self._min_stock_probability: float = 0.4  # Replace if prob drops below this
+        
         logger.info("TradingPipeline initialized")
     
     async def _init_components(self):
@@ -219,11 +224,15 @@ class TradingPipeline:
         Run RL agent continuously during market hours.
         
         Checks Top 10 stocks every minute for trade opportunities.
+        Refreshes Top 10 every 30 minutes to replace underperforming stocks.
         """
         logger.info("🔄 Starting RL continuous loop...")
         
         while self._is_market_open():
             try:
+                # Dynamic refresh: Check if any stock should be replaced
+                await self._maybe_refresh_top_10()
+                
                 for symbol in self._top_10:
                     signal = await self._rl_evaluate(symbol)
                     
@@ -246,6 +255,84 @@ class TradingPipeline:
                 await asyncio.sleep(5)
         
         logger.info("RL loop ended - market closed")
+    
+    async def _maybe_refresh_top_10(self):
+        """
+        Periodically re-evaluate Top 10 and replace underperforming stocks.
+        
+        Runs every 30 minutes. Stocks with probability below threshold
+        are replaced by next best from Top 50.
+        """
+        now = datetime.now()
+        
+        # Check if enough time passed since last refresh
+        if self._last_refresh_time:
+            minutes_since = (now - self._last_refresh_time).total_seconds() / 60
+            if minutes_since < self._refresh_interval_minutes:
+                return
+        
+        logger.info("🔄 Refreshing Top 10 - checking for underperformers...")
+        self._last_refresh_time = now
+        
+        # Re-score current Top 10
+        to_replace: List[str] = []
+        current_scores: Dict[str, float] = {}
+        
+        for symbol in self._top_10:
+            # Skip if we have active position - don't remove mid-trade
+            if symbol in self._active_positions:
+                logger.debug(f"  {symbol}: Keeping (active position)")
+                current_scores[symbol] = 1.0  # Keep at top
+                continue
+                
+            try:
+                features = await self._get_stock_features(symbol)
+                if features:
+                    prob = self._ml_predictor.predict_proba(features)
+                    current_scores[symbol] = prob
+                    
+                    if prob < self._min_stock_probability:
+                        to_replace.append(symbol)
+                        logger.info(f"  ❌ {symbol}: {prob:.1%} - BELOW THRESHOLD, will replace")
+                    else:
+                        logger.debug(f"  ✅ {symbol}: {prob:.1%}")
+                else:
+                    to_replace.append(symbol)
+            except Exception as e:
+                logger.debug(f"  {symbol}: Error - {e}")
+        
+        if not to_replace:
+            logger.info("  All Top 10 stocks still performing well ✅")
+            return
+        
+        # Find replacements from Top 50 (excluding current Top 10)
+        candidates = [s for s in self._top_50 if s not in self._top_10]
+        replacements: List[tuple] = []
+        
+        for symbol in candidates[:20]:  # Check first 20 candidates
+            try:
+                features = await self._get_stock_features(symbol)
+                if features:
+                    prob = self._ml_predictor.predict_proba(features)
+                    if prob >= self._min_stock_probability:
+                        replacements.append((symbol, prob))
+            except:
+                pass
+        
+        # Sort by probability
+        replacements.sort(key=lambda x: x[1], reverse=True)
+        
+        # Perform replacement
+        for old_symbol in to_replace:
+            if replacements:
+                new_symbol, new_prob = replacements.pop(0)
+                idx = self._top_10.index(old_symbol)
+                self._top_10[idx] = new_symbol
+                logger.info(f"  🔄 Replaced {old_symbol} → {new_symbol} ({new_prob:.1%})")
+            else:
+                logger.warning(f"  ⚠️ No replacement found for {old_symbol}")
+        
+        logger.info(f"  Updated Top 10: {self._top_10}")
     
     async def _rl_evaluate(self, symbol: str) -> Optional[TradeSignal]:
         """
