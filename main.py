@@ -31,6 +31,9 @@ from risk.position_sizer import get_position_sizer
 # Data Maintenance
 from automation.data_maintenance import get_maintenance_manager
 
+# Daily Screener
+from analysis.screener import get_daily_screener
+
 
 # Global flag for graceful shutdown
 _shutdown_requested = False
@@ -183,6 +186,19 @@ async def main_loop(logger, config, db, ibkr_conn, data_fetcher, data_pipeline,
         try:
             iteration += 1
             loop_start = datetime.now()
+            
+            # 0. Morning Screening (9:30-9:35 AM) - Select top 50 options stocks
+            today = datetime.now()
+            if today.hour == 9 and 30 <= today.minute <= 35:
+                screener = get_daily_screener()
+                watchlist = screener.get_today_watchlist()
+                if not watchlist:
+                    logger.info("🌅 Running morning options screening...")
+                    try:
+                        watchlist = await screener.run_morning_screen()
+                        logger.info(f"✅ Today's watchlist: {len(watchlist)} stocks")
+                    except Exception as e:
+                        logger.error(f"Screening error: {e}")
             
             # 1. Check IBKR connection
             connected = await check_ibkr_connection(ibkr_conn, logger)
