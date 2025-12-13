@@ -1,6 +1,6 @@
 """
 AI Prompt Templates
-Structured prompts for Gemini and Claude AI analysis.
+Structured prompts for Gemini AI analysis.
 """
 from datetime import datetime
 from typing import Any, Dict, Optional, cast
@@ -149,7 +149,7 @@ Analyzuj fundamenty + news sentiment pro každou akcii a vyber TOP 2-3 kandidát
     return prompt
 
 
-def get_claude_greeks_analysis_prompt(
+def get_gemini_greeks_analysis_prompt(
     symbol: str,
     options_data: list,
     vix: float,
@@ -159,7 +159,7 @@ def get_claude_greeks_analysis_prompt(
     max_pain: Optional[float] = None
 ) -> str:
     """
-    Generate prompt for Claude Greeks analysis and trade recommendation
+    Generate prompt for Gemini Greeks analysis and trade recommendation
     
     Args:
         symbol: Stock ticker
@@ -329,8 +329,8 @@ def parse_gemini_response(response_text: str) -> Dict[str, Any]:
         }
 
 
-def parse_claude_response(response_text: str) -> Dict[str, Any]:
-    """Parse Claude trade analysis JSON response"""
+def parse_greeks_response(response_text: str) -> Dict[str, Any]:
+    """Parse Gemini Greeks analysis JSON response"""
     import json
     
     try:
