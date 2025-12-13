@@ -464,6 +464,27 @@ class DataMaintenanceManager:
     def should_run_monthly_maintenance(self) -> bool:
         """Check if today is maintenance day (1st of month)."""
         return datetime.now().day == 1
+    
+    def should_run_saturday_merge(self) -> bool:
+        """Check if today is Saturday (weekday 5 = Saturday)."""
+        return datetime.now().weekday() == 5
+    
+    async def run_saturday_merge(self) -> Dict[str, int]:
+        """
+        Run Saturday merge job.
+        
+        Called every Saturday to merge accumulated live data
+        from the trading week into parquet files.
+        
+        Returns:
+            Merge results per symbol
+        """
+        if not self.should_run_saturday_merge():
+            logger.info("⏭️ Not Saturday, skipping merge")
+            return {}
+        
+        logger.info("🗓️ Saturday detected - running weekly data merge")
+        return await self.merge_live_to_parquet()
 
 
 # Singleton
