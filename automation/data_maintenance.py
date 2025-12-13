@@ -65,7 +65,7 @@ class DataMaintenanceManager:
             # Check parquet file
             df = self.storage.load_historical_parquet(symbol, '1min')
             
-            if df is not None and len(df) > 0:
+            if df is not None and len(df) > 1000:
                 results[symbol] = True
                 logger.info(f"✅ {symbol}: {len(df):,} bars found")
             else:
