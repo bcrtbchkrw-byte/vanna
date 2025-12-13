@@ -28,26 +28,29 @@ class TradingEnvironment(gym.Env):
     
     metadata = {"render_modes": ["human", "ansi"]}
     
-    # Market features from parquet (44 total - all numeric features from *_rl.parquet)
+    # Market features from normalized *_rl.parquet (42 total)
+    # NO OHLC, NO timestamp - all normalized/scaled
     MARKET_FEATURES = [
-        # VIX (9)
-        'vix', 'vix3m', 'vix_ratio', 'vix_in_contango', 'vix_change_1d', 'vix_change_5d',
-        'vix_percentile', 'vix_zscore', 'regime',
-        # Time (6)
+        # Time (6) - already normalized [-1, 1]
         'sin_time', 'cos_time', 'sin_dow', 'cos_dow', 'sin_doy', 'cos_doy',
-        # Price (5)
+        # VIX (8) - ratios and z-scores, comparable across symbols
+        'vix_ratio', 'vix_in_contango', 'vix_change_1d', 'vix_change_5d',
+        'vix_percentile', 'vix_zscore', 'vix_norm', 'vix3m_norm',
+        # Regime (1)
+        'regime',
+        # Options (3) - normalized
+        'options_iv_atm', 'options_put_call_ratio', 'options_volume_norm',
+        # Price (5) - returns/ratios, already normalized
         'return_1m', 'return_5m', 'volatility_20', 'momentum_20', 'range_pct',
-        # Greeks (7)
+        # Greeks (7) - already scale-invariant
         'delta', 'gamma', 'theta', 'vega', 'vanna', 'charm', 'volga',
-        # Options (3)
-        'options_iv_atm', 'options_volume', 'options_put_call_ratio',
         # ML Regime outputs (4)
         'regime_ml', 'regime_adj_position', 'regime_adj_delta', 'regime_adj_dte',
-        # ML DTE outputs (2)
-        'optimal_dte', 'dte_confidence',
+        # ML DTE outputs (2) - normalized
+        'dte_confidence', 'optimal_dte_norm',
         # ML Trade outputs (1)
         'trade_prob',
-        # Binary signals (5)
+        # Binary signals (5) - 0/1
         'signal_high_prob', 'signal_low_vol', 'signal_crisis',
         'signal_contango', 'signal_backwardation',
     ]
@@ -58,9 +61,9 @@ class TradingEnvironment(gym.Env):
         'trade_count', 'bid_ask_spread', 'market_open'
     ]
     
-    N_MARKET_FEATURES = 44
+    N_MARKET_FEATURES = 42
     N_POSITION_FEATURES = 7
-    N_FEATURES = 51  # 44 market + 7 position
+    N_FEATURES = 49  # 42 market + 7 position
     
     def __init__(
         self,

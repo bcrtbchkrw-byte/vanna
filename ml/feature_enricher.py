@@ -144,10 +144,88 @@ class FeatureEnricher:
         
         return df
     
+    def normalize_for_rl(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Normalize features for RL training.
+        
+        - Removes metadata columns (timestamp, symbol, OHLCV, timeframe)
+        - Normalizes VIX and volume using z-score
+        - Normalizes DTE to 0-1 range
+        - Ensures all features are comparable across symbols
+        
+        Args:
+            df: Enriched DataFrame
+            
+        Returns:
+            RL-ready DataFrame with normalized features only
+        """
+        df = df.copy()
+        
+        # ================================================================
+        # 1. Drop metadata columns (not features)
+        # ================================================================
+        drop_cols = [
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'symbol', 'timeframe', 'regime_label', 'id'
+        ]
+        df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors='ignore')
+        
+        logger.info(f"Dropped metadata columns, {len(df.columns)} remain")
+        
+        # ================================================================
+        # 2. Normalize VIX-related (z-score within dataset)
+        # ================================================================
+        vix_cols = ['vix', 'vix3m']
+        for col in vix_cols:
+            if col in df.columns:
+                mean = df[col].mean()
+                std = df[col].std()
+                if std > 0:
+                    df[f'{col}_norm'] = (df[col] - mean) / std
+                else:
+                    df[f'{col}_norm'] = 0
+                df = df.drop(columns=[col])
+        
+        # ================================================================
+        # 3. Normalize DTE to 0-1 range
+        # ================================================================
+        if 'optimal_dte' in df.columns:
+            df['optimal_dte_norm'] = df['optimal_dte'] / 60.0  # Max DTE is 60
+            df = df.drop(columns=['optimal_dte'])
+        
+        # ================================================================
+        # 4. Normalize volume (z-score, often has huge variance)
+        # ================================================================
+        if 'options_volume' in df.columns:
+            mean = df['options_volume'].mean()
+            std = df['options_volume'].std()
+            if std > 0:
+                df['options_volume_norm'] = (df['options_volume'] - mean) / std
+            else:
+                df['options_volume_norm'] = 0
+            df = df.drop(columns=['options_volume'])
+        
+        # ================================================================
+        # 5. Clip outliers (prevent extreme values)
+        # ================================================================
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            df[col] = df[col].clip(-10, 10)
+        
+        # ================================================================
+        # 6. Fill any remaining NaN
+        # ================================================================
+        df = df.fillna(0)
+        
+        logger.info(f"✅ Normalized: {len(df.columns)} RL features")
+        
+        return df
+    
     def process_file(
         self,
         input_path: str,
-        output_path: str = None
+        output_path: str = None,
+        normalize: bool = True
     ) -> pd.DataFrame:
         """
         Process single parquet file.
@@ -155,6 +233,7 @@ class FeatureEnricher:
         Args:
             input_path: Path to *_vanna.parquet
             output_path: Path to output file (default: *_rl.parquet)
+            normalize: Whether to normalize for RL (removes OHLC, normalizes values)
         """
         input_path = Path(input_path)
         
@@ -165,8 +244,12 @@ class FeatureEnricher:
         logger.info(f"Loading {input_path}...")
         df = pd.read_parquet(input_path)
         
-        # Enrich
+        # Enrich with ML features
         df = self.enrich_dataframe(df)
+        
+        # Normalize for RL (drop OHLC, normalize values)
+        if normalize:
+            df = self.normalize_for_rl(df)
         
         # Save
         if output_path is None:
@@ -175,7 +258,7 @@ class FeatureEnricher:
             output_path = Path(output_path)
         
         df.to_parquet(output_path, index=False, compression='snappy')
-        logger.info(f"💾 Saved to {output_path}")
+        logger.info(f"💾 Saved to {output_path} ({len(df.columns)} columns)")
         
         return df
     
