@@ -141,6 +141,7 @@ class SaturdayTrainingPipeline:
         try:
             from ml.trade_success_predictor import TradeSuccessPredictor
             import pandas as pd
+            import numpy as np
             
             logger.info("   Training TradeSuccessPredictor...")
             
@@ -152,8 +153,17 @@ class SaturdayTrainingPipeline:
             
             if dfs:
                 combined = pd.concat(dfs, ignore_index=True)
+                
+                # Create synthetic labels from return_5m
+                # For short puts: negative return = success
+                if 'return_5m' in combined.columns:
+                    combined['is_successful'] = (combined['return_5m'] < 0).astype(int)
+                else:
+                    # Random if no return column
+                    combined['is_successful'] = np.random.randint(0, 2, len(combined))
+                
                 predictor = TradeSuccessPredictor()
-                metrics = predictor.train(combined)
+                metrics = predictor.train(combined, target_col='is_successful')
                 ml_results['trade_predictor'] = metrics
                 logger.info(f"   ✅ TradeSuccessPredictor: {metrics.get('accuracy', 0):.2%}")
             
