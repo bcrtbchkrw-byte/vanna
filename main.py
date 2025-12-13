@@ -221,6 +221,21 @@ async def main_loop(logger, config, db, ibkr_conn, data_fetcher, data_pipeline,
                 except Exception as e:
                     logger.error(f"Maintenance error: {e}")
             
+            # 7. Saturday training (every Saturday at 6 AM)
+            if today.weekday() == 5 and today.hour == 6:
+                from automation.saturday_training import should_run_saturday_training, run_saturday_training
+                
+                # Only run once per Saturday (use maintenance_day tracking)
+                if last_maintenance_day != today.date():
+                    logger.info("🗓️ SATURDAY: Starting weekly ML/RL training...")
+                    try:
+                        # Skip RL if not enough data
+                        results = await run_saturday_training(skip_rl=False, rl_timesteps=50_000)
+                        logger.info(f"✅ Saturday training complete: {results}")
+                        last_maintenance_day = today.date()  # Reuse flag to prevent re-run
+                    except Exception as e:
+                        logger.error(f"Saturday training error: {e}")
+            
             # Wait for next iteration
             await asyncio.sleep(loop_interval)
             

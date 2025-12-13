@@ -43,60 +43,71 @@ class ExitManager:
         Returns:
             True if exit order placed
         """
-        # Logic for Short Premium Strategy (Credit Spread)
-        # We Sold at Entry Price (Credit). We want to Buy Back at lower price.
-        # Profit = Entry - Current.
-        # Max Profit = Entry.
-        # 50% Profit = Current <= Entry * 0.50.
-        
-        # Stop Loss:
-        # Loss = Current - Entry.
-        # risk = 2x Credit.
-        # Stop if Current >= Entry * 2.0 -> Loss = 2.0*Credit - Credit = 1.0*Credit? 
-        # Usually stop is at 200% of collected premium price.
-        
-        if entry_price <= 0:
-            logger.warning("Entry price should be positive for Credit strategies")
+        try:
+            # Logic for Short Premium Strategy (Credit Spread)
+            # We Sold at Entry Price (Credit). We want to Buy Back at lower price.
+            # Profit = Entry - Current.
+            # Max Profit = Entry.
+            # 50% Profit = Current <= Entry * 0.50.
+            
+            # Stop Loss:
+            # Loss = Current - Entry.
+            # risk = 2x Credit.
+            # Stop if Current >= Entry * 2.0 -> Loss = 2.0*Credit - Credit = 1.0*Credit? 
+            # Usually stop is at 200% of collected premium price.
+            
+            if entry_price <= 0:
+                logger.warning("Entry price should be positive for Credit strategies")
+                return False
+                
+            profit_pct = (entry_price - current_price) / entry_price
+            
+            symbol = position.contract.localSymbol
+            
+            logger.debug(
+                f"Exit Check {symbol}: Entry={entry_price}, Curr={current_price}, "
+                f"Profit={profit_pct:.1%}"
+            )
+            
+            if profit_pct >= self.take_profit_pct:
+                logger.info(f"💰 Take Profit Triggered for {symbol} (+{profit_pct:.1%})")
+                await self._close_position(position, "Take Profit")
+                return True
+                
+            if current_price >= (entry_price * self.stop_loss_mult):
+                msg = f"🛑 SL for {symbol} (Price {current_price} > Limit {entry_price * self.stop_loss_mult})"
+                logger.info(msg)
+                await self._close_position(position, "Stop Loss")
+                return True
+                
             return False
             
-        profit_pct = (entry_price - current_price) / entry_price
-        
-        symbol = position.contract.localSymbol
-        
-        logger.debug(
-            f"Exit Check {symbol}: Entry={entry_price}, Curr={current_price}, "
-            f"Profit={profit_pct:.1%}"
-        )
-        
-        if profit_pct >= self.take_profit_pct:
-            logger.info(f"💰 Take Profit Triggered for {symbol} (+{profit_pct:.1%})")
-            await self._close_position(position, "Take Profit")
-            return True
-            
-        if current_price >= (entry_price * self.stop_loss_mult):
-            msg = f"🛑 SL for {symbol} (Price {current_price} > Limit {entry_price * self.stop_loss_mult})"
-            logger.info(msg)
-            await self._close_position(position, "Stop Loss")
-            return True
-            
-        return False
+        except Exception as e:
+            logger.error(f"Error in exit check: {e}")
+            return False
 
     async def _close_position(self, position: Any, reason: str):
-        """Close the position."""
-        contract = position.contract
-        qty = abs(position.position)
-        
-        # If short (negative pos), we Buy to Close
-        action = 'BUY' if position.position < 0 else 'SELL'
-        
-        logger.info(f"Closing {contract.localSymbol} ({reason}): {action} {qty}")
-        
-        # Market order for immediate exit? Or limit?
-        # Safety: Market for Stop Loss, Limit for TP?
-        # For simplicity, Market order now.
-        order = MarketOrder(action, qty)
-        
-        await self.order_manager.place_order(contract, order)
+        """Close the position with error handling."""
+        try:
+            contract = position.contract
+            qty = abs(position.position)
+            
+            # If short (negative pos), we Buy to Close
+            action = 'BUY' if position.position < 0 else 'SELL'
+            
+            logger.info(f"Closing {contract.localSymbol} ({reason}): {action} {qty}")
+            
+            # Market order for immediate exit? Or limit?
+            # Safety: Market for Stop Loss, Limit for TP?
+            # For simplicity, Market order now.
+            order = MarketOrder(action, qty)
+            
+            await self.order_manager.place_order(contract, order)
+            
+        except Exception as e:
+            logger.error(f"CRITICAL: Failed to close position ({reason}): {e}")
+            # TODO: Notify user via Telegram for critical failures
+            raise  # Re-raise to ensure caller knows about failure
 
 
 # Singleton

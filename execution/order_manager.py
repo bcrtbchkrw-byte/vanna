@@ -15,12 +15,24 @@ from ibkr.connection import get_ibkr_connection
 class OrderManager:
     """
     Manages order execution and tracking.
+    
+    IMPORTANT: Check paper_mode before placing orders!
+    Paper mode = log only, no real orders.
     """
     
     def __init__(self):
         self.config = get_config()
         self.account = self.config.ibkr.account
         self._connection = None
+        
+        # SAFETY: Paper mode prevents real order execution
+        # Set PAPER_MODE=false in .env for live trading
+        self.paper_mode = getattr(self.config.ibkr, 'paper_mode', True)
+        
+        if self.paper_mode:
+            logger.warning("⚠️ OrderManager in PAPER MODE - No real orders will be placed!")
+        else:
+            logger.info("🔴 OrderManager in LIVE MODE - Real orders enabled")
 
     async def _get_ib(self):
         if self._connection is None:
