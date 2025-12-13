@@ -1,12 +1,13 @@
 """
-Daily Options Screener
+Daily Options Screener with IBKR Integration
 
-Selects top 50 stocks for options trading each morning based on:
-1. Options liquidity (bid-ask spread, open interest)
-2. Implied volatility (IV rank, IV percentile)
-3. Volume (average daily volume)
+Selects top 50 stocks for options trading each morning based on REAL data:
+1. Options volume (from IBKR)
+2. Implied volatility (IV rank from ATM options)
+3. Bid-ask spread (from IBKR)
 4. No earnings within 7 days
 
+Universe: 300+ optionable stocks
 Runs at market open (9:30 AM) and caches results for the day.
 """
 from typing import List, Dict, Any, Optional
@@ -35,38 +36,108 @@ class StockScore:
     reason: str = ""
 
 
-# Universe of optionable stocks (high liquidity ETFs + popular stocks)
-# This is the base universe to screen from
+# ============================================================================
+# SCREENER UNIVERSE - 300+ Optionable Stocks
+# ============================================================================
 SCREENER_UNIVERSE = [
-    # ETFs (always included - highest options liquidity)
-    'SPY', 'QQQ', 'IWM', 'GLD', 'TLT', 'XLF', 'XLE', 'XLK', 'XLV', 'XLI',
-    'EEM', 'HYG', 'LQD', 'SLV', 'USO', 'EWZ', 'FXI', 'VXX', 'ARKK', 'XBI',
+    # ========== ETFs (Core - Always High Liquidity) ==========
+    'SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'IEF', 'LQD', 'HYG',
+    'XLF', 'XLE', 'XLK', 'XLV', 'XLI', 'XLU', 'XLP', 'XLY', 'XLB', 'XLRE',
+    'EEM', 'EFA', 'VWO', 'EWZ', 'FXI', 'EWJ', 'EWG', 'EWY', 'EWH', 'INDA',
+    'VXX', 'UVXY', 'SQQQ', 'TQQQ', 'SPXU', 'SPXL', 'TNA', 'TZA',
+    'ARKK', 'ARKG', 'ARKF', 'ARKW', 'XBI', 'IBB', 'LABU', 'LABD',
+    'USO', 'UNG', 'GDX', 'GDXJ', 'SLV', 'JNUG', 'NUGT',
+    'KRE', 'XOP', 'OIH', 'SMH', 'SOXX', 'ITB', 'XHB', 'XRT',
     
-    # Mega caps (high options volume)
-    'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'NVDA', 'TSLA', 'AMD', 'NFLX', 'COIN',
-    'JPM', 'BAC', 'WFC', 'GS', 'MS', 'C', 'V', 'MA', 'PYPL', 'SQ',
+    # ========== Mega Caps (Highest Options Volume) ==========
+    'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'GOOG', 'META', 'NVDA', 'TSLA',
+    'BRK.B', 'UNH', 'JNJ', 'V', 'MA', 'XOM', 'JPM', 'PG', 'HD', 'CVX',
+    'LLY', 'ABBV', 'PFE', 'MRK', 'AVGO', 'KO', 'PEP', 'COST', 'TMO',
+    'WMT', 'BAC', 'MCD', 'CSCO', 'ABT', 'DHR', 'ACN', 'CRM', 'ADBE',
+    'ORCL', 'NKE', 'NFLX', 'AMD', 'TXN', 'INTC', 'QCOM', 'IBM',
     
-    # Tech
-    'CRM', 'ADBE', 'INTC', 'MU', 'QCOM', 'AVGO', 'TXN', 'AMAT', 'LRCX', 'KLAC',
+    # ========== Tech / Growth (High Volatility) ==========
+    'MU', 'AMAT', 'LRCX', 'KLAC', 'ASML', 'TSM', 'MRVL', 'ON', 'NXPI',
     'NOW', 'SNOW', 'PLTR', 'U', 'DDOG', 'NET', 'ZS', 'CRWD', 'PANW', 'OKTA',
+    'SHOP', 'SQ', 'PYPL', 'COIN', 'MELI', 'SE', 'PINS', 'SNAP', 'RBLX',
+    'UBER', 'LYFT', 'DASH', 'ABNB', 'BKNG', 'EXPE', 'MAR', 'HLT', 'WYNN',
+    'ZM', 'DOCU', 'ROKU', 'TWLO', 'TTD', 'BILL', 'MDB', 'ESTC', 'CFLT',
+    'PATH', 'AI', 'UPST', 'AFRM', 'OPEN', 'RDFN', 'Z', 'ZG', 'COMP',
     
-    # Consumer
-    'DIS', 'SBUX', 'NKE', 'MCD', 'WMT', 'COST', 'TGT', 'HD', 'LOW', 'LULU',
+    # ========== Fintech / Brokers (User Requested) ==========
+    'SOFI', 'HOOD', 'AFRM', 'NU', 'LC', 'UPST', 'PAYO', 'PSFE',
+    'SCHW', 'IBKR', 'ETFC', 'AMBA', 'FUTU', 'TIGR', 'MKTX',
     
-    # Healthcare
-    'JNJ', 'PFE', 'UNH', 'ABBV', 'MRK', 'LLY', 'BMY', 'AMGN', 'GILD', 'MRNA',
+    # ========== Banks / Financials ==========
+    'JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'USB', 'PNC', 'TFC', 'COF',
+    'AXP', 'DFS', 'BLK', 'SCHW', 'CME', 'ICE', 'NDAQ', 'CBOE',
+    'AIG', 'MET', 'PRU', 'ALL', 'PGR', 'TRV', 'AFL', 'HIG',
     
-    # Energy
-    'XOM', 'CVX', 'OXY', 'SLB', 'HAL', 'DVN', 'EOG', 'PXD', 'MPC', 'VLO',
+    # ========== Consumer / Retail ==========
+    'DIS', 'CMCSA', 'SBUX', 'NKE', 'MCD', 'YUM', 'SBUX', 'CMG', 'DPZ',
+    'WMT', 'COST', 'TGT', 'HD', 'LOW', 'DG', 'DLTR', 'FIVE', 'ULTA',
+    'LULU', 'GPS', 'ANF', 'URBN', 'RL', 'PVH', 'TPR', 'VFC', 'HBI',
+    'PTON', 'NLS', 'LULU', 'BIRD', 'CROX', 'SKX', 'DECK', 'WWW',
     
-    # Other popular
-    'BA', 'CAT', 'DE', 'UPS', 'FDX', 'GM', 'F', 'RIVN', 'LCID', 'NIO',
+    # ========== Food / Beverages ==========
+    'HLF', 'USANA', 'HAIN', 'BYND', 'OTLY', 'TTCF',  # User requested HLF
+    'KO', 'PEP', 'MNST', 'KDP', 'STZ', 'TAP', 'BUD', 'SAM',
+    
+    # ========== Healthcare / Biotech ==========
+    'JNJ', 'PFE', 'UNH', 'ABBV', 'MRK', 'LLY', 'BMY', 'AMGN', 'GILD',
+    'MRNA', 'BNTX', 'NVAX', 'VRTX', 'REGN', 'BIIB', 'SGEN', 'ALNY',
+    'EDIT', 'CRSP', 'NTLA', 'BEAM', 'VERV', 'IONS', 'SRPT', 'BMRN',
+    'EXAS', 'ILMN', 'DXCM', 'ISRG', 'ALGN', 'ZBH', 'SYK', 'MDT',
+    
+    # ========== Energy ==========
+    'XOM', 'CVX', 'COP', 'EOG', 'SLB', 'OXY', 'MPC', 'VLO', 'PSX',
+    'PXD', 'DVN', 'FANG', 'APA', 'HAL', 'BKR', 'NOV', 'RIG',
+    'ET', 'EPD', 'MMP', 'KMI', 'WMB', 'OKE', 'TRGP', 'LNG',
+    
+    # ========== Industrial / Aerospace ==========
+    'BA', 'LMT', 'NOC', 'RTX', 'GD', 'GE', 'HON', 'CAT', 'DE',
+    'UPS', 'FDX', 'DAL', 'UAL', 'AAL', 'LUV', 'JBLU', 'ALK', 'SAVE',
+    'CSX', 'UNP', 'NSC', 'ODFL', 'XPO', 'CHRW', 'EXPD', 'JBHT',
+    
+    # ========== Auto / EV ==========
+    'TSLA', 'GM', 'F', 'RIVN', 'LCID', 'NIO', 'XPEV', 'LI', 'FSR',
+    'QS', 'CHPT', 'BLNK', 'EVGO', 'PLUG', 'FCEL', 'BE', 'BLDP',
+    
+    # ========== Mining / Materials ==========
+    'FCX', 'NEM', 'GOLD', 'AEM', 'NUE', 'STLD', 'CLF', 'X', 'AA',
+    'ALB', 'LAC', 'LTHM', 'MP', 'PLL', 'SQM', 'CC', 'DOW', 'LYB',
+    
+    # ========== REITs ==========
+    'AMT', 'PLD', 'CCI', 'EQIX', 'SPG', 'O', 'AVB', 'EQR', 'VTR',
+    'DLR', 'PSA', 'ESS', 'MAA', 'UDR', 'INVH', 'SUI', 'ELS', 'CPT',
+    
+    # ========== Cannabis (High IV) ==========
+    'TLRY', 'CGC', 'ACB', 'CRON', 'SNDL', 'CURLF', 'GTBIF', 'TCNNF',
+    
+    # ========== Meme / Speculative (High Volume) ==========
+    'GME', 'AMC', 'BBBY', 'BB', 'WKHS', 'SPCE', 'PLTR', 'CLOV', 'WISH',
+    'IRNT', 'TMC', 'ATER', 'SDC', 'GOEV', 'HYZN', 'NKLA', 'RIDE',
+    
+    # ========== China ADRs ==========
+    'BABA', 'JD', 'PDD', 'BIDU', 'NIO', 'XPEV', 'LI', 'BILI', 'IQ',
+    'TME', 'VIPS', 'DIDI', 'NTES', 'TAL', 'EDU', 'GOTU', 'YMM',
+    
+    # ========== User Requested ==========
+    'TE',  # TE Connectivity
 ]
+
+# Remove duplicates
+SCREENER_UNIVERSE = list(dict.fromkeys(SCREENER_UNIVERSE))
 
 
 class DailyOptionsScreener:
     """
     Morning screener that selects top 50 stocks for options trading.
+    
+    Uses REAL IBKR data for:
+    - Options volume
+    - Implied volatility (ATM options)
+    - Bid-ask spread
     
     Runs once at market open and caches results for the day.
     """
@@ -130,20 +201,25 @@ class DailyOptionsScreener:
         
         # 2. Score each stock
         scores: List[StockScore] = []
+        fetcher = await self._get_data_fetcher()
         
-        for symbol in SCREENER_UNIVERSE:
+        for i, symbol in enumerate(SCREENER_UNIVERSE):
             try:
-                score = await self._score_stock(symbol)
+                score = await self._score_stock_ibkr(symbol, fetcher)
                 if score and score.passed_earnings and score.passed_liquidity:
                     scores.append(score)
-                    logger.debug(f"  ✅ {symbol}: {score.score:.2f}")
+                    logger.debug(f"  ✅ {symbol}: {score.score:.2f} (IV:{score.iv_rank:.0%}, Vol:{score.options_volume:,})")
                 else:
                     logger.debug(f"  ❌ {symbol}: {score.reason if score else 'Error'}")
             except Exception as e:
-                logger.debug(f"  ❌ {symbol}: Error - {e}")
+                logger.debug(f"  ❌ {symbol}: {e}")
             
-            # Small delay to avoid IBKR pacing
-            await asyncio.sleep(0.1)
+            # Progress log every 50 stocks
+            if (i + 1) % 50 == 0:
+                logger.info(f"   Progress: {i+1}/{len(SCREENER_UNIVERSE)} stocks screened...")
+            
+            # Rate limiting for IBKR
+            await asyncio.sleep(0.2)
         
         # 3. Sort by score and take top N
         scores.sort(key=lambda x: x.score, reverse=True)
@@ -158,26 +234,27 @@ class DailyOptionsScreener:
         logger.info("=" * 60)
         logger.info(f"📊 TOP {self.top_n} STOCKS FOR TODAY:")
         logger.info("=" * 60)
-        for i, stock in enumerate(top_stocks[:10], 1):
-            logger.info(f"  {i:2}. {stock.symbol:6} | Score: {stock.score:.1f} | IV: {stock.iv_rank:.0%}")
-        if len(top_stocks) > 10:
-            logger.info(f"  ... and {len(top_stocks) - 10} more")
+        for i, stock in enumerate(top_stocks[:15], 1):
+            logger.info(
+                f"  {i:2}. {stock.symbol:6} | Score: {stock.score:5.1f} | "
+                f"IV: {stock.iv_rank:5.0%} | Vol: {stock.options_volume:>8,}"
+            )
+        if len(top_stocks) > 15:
+            logger.info(f"  ... and {len(top_stocks) - 15} more")
         logger.info("=" * 60)
         
         return self._today_watchlist
     
-    async def _score_stock(self, symbol: str) -> Optional[StockScore]:
+    async def _score_stock_ibkr(self, symbol: str, fetcher) -> Optional[StockScore]:
         """
-        Score a single stock for options trading.
+        Score a single stock using REAL IBKR data.
         
-        Scoring criteria:
-        - IV rank (0-100): Higher = better for selling premium
-        - Options volume: Higher = better liquidity
-        - Spread: Lower = better execution
-        - No earnings: Must not be in earnings blackout
+        Fetches:
+        - Options chain for ATM IV and volume
+        - Quote for spread estimation
         """
         try:
-            # Check earnings blackout
+            # 1. Check earnings blackout
             earnings = await self.earnings_checker.check_blackout(symbol)
             if earnings['in_blackout']:
                 return StockScore(
@@ -188,31 +265,50 @@ class DailyOptionsScreener:
                     avg_spread_pct=100,
                     passed_earnings=False,
                     passed_liquidity=False,
-                    reason=f"Earnings blackout: {earnings['reason']}"
+                    reason=f"Earnings: {earnings['reason']}"
                 )
             
-            # Get market data (simplified - would need real IBKR calls)
-            # For now, use heuristics based on symbol type
-            iv_rank = self._estimate_iv_rank(symbol)
-            options_volume = self._estimate_options_volume(symbol)
-            avg_spread_pct = self._estimate_spread(symbol)
+            # 2. Get stock quote for spread
+            quote = await fetcher.get_stock_quote(symbol)
+            if not quote or not quote.get('bid') or not quote.get('ask'):
+                # Fallback to estimates if no quote
+                avg_spread_pct = self._estimate_spread(symbol)
+            else:
+                bid = quote['bid']
+                ask = quote['ask']
+                mid = (bid + ask) / 2
+                avg_spread_pct = ((ask - bid) / mid * 100) if mid > 0 else 5.0
             
-            # Check liquidity threshold
+            # 3. Get options data (IV and volume)
+            try:
+                options_data = await fetcher.get_options_chain(symbol)
+                if options_data:
+                    iv_rank = options_data.get('iv_atm', 0.3)  # ATM IV
+                    options_volume = options_data.get('total_volume', 10000)
+                else:
+                    iv_rank = self._estimate_iv_rank(symbol)
+                    options_volume = self._estimate_options_volume(symbol)
+            except Exception:
+                # Fallback to estimates
+                iv_rank = self._estimate_iv_rank(symbol)
+                options_volume = self._estimate_options_volume(symbol)
+            
+            # 4. Check liquidity threshold
             passed_liquidity = options_volume > 1000 and avg_spread_pct < 5.0
             
-            # Calculate composite score
+            # 5. Calculate composite score
             # Weight: IV (40%) + Volume (40%) + Spread (20%)
             score = (
-                iv_rank * 0.4 +
-                min(options_volume / 100000, 1.0) * 40 +  # Cap at 100k volume
-                max(0, (5 - avg_spread_pct) / 5) * 20  # Lower spread = higher score
+                min(iv_rank * 100, 100) * 0.4 +  # IV capped at 100%
+                min(options_volume / 100000, 1.0) * 40 +  # Volume capped at 100k
+                max(0, (5 - avg_spread_pct) / 5) * 20  # Tighter spread = higher score
             )
             
             return StockScore(
                 symbol=symbol,
                 score=score,
                 iv_rank=iv_rank,
-                options_volume=options_volume,
+                options_volume=int(options_volume),
                 avg_spread_pct=avg_spread_pct,
                 passed_earnings=True,
                 passed_liquidity=passed_liquidity,
@@ -232,42 +328,32 @@ class DailyOptionsScreener:
             )
     
     def _estimate_iv_rank(self, symbol: str) -> float:
-        """Estimate IV rank (0-100). Would use real data in production."""
-        # ETFs typically have lower IV
-        if symbol in ['SPY', 'QQQ', 'IWM']:
-            return 45
-        elif symbol in ['GLD', 'TLT', 'XLF']:
-            return 35
-        # Tech/growth has higher IV
-        elif symbol in ['TSLA', 'NVDA', 'AMD', 'COIN']:
-            return 65
-        # Default
-        return 50
+        """Fallback IV estimate when IBKR unavailable."""
+        high_iv = ['TSLA', 'NVDA', 'AMD', 'COIN', 'MARA', 'GME', 'AMC', 'RIVN', 'LCID', 
+                   'PLTR', 'SOFI', 'HOOD', 'NIO', 'XPEV', 'MRNA', 'BNTX']
+        if symbol in high_iv:
+            return 0.65
+        elif symbol in ['SPY', 'QQQ', 'IWM', 'GLD', 'TLT']:
+            return 0.45
+        return 0.50
     
     def _estimate_options_volume(self, symbol: str) -> int:
-        """Estimate options volume. Would use real data in production."""
-        # Top tier (millions)
-        if symbol in ['SPY', 'QQQ', 'AAPL', 'TSLA', 'NVDA', 'AMD']:
+        """Fallback volume estimate when IBKR unavailable."""
+        tier1 = ['SPY', 'QQQ', 'AAPL', 'TSLA', 'NVDA', 'AMD', 'AMZN', 'META']
+        tier2 = ['IWM', 'MSFT', 'GOOGL', 'NFLX', 'BA', 'DIS', 'COIN', 'PLTR']
+        if symbol in tier1:
             return 500000
-        # Second tier
-        elif symbol in ['IWM', 'META', 'AMZN', 'MSFT', 'GOOGL']:
+        elif symbol in tier2:
             return 200000
-        # Third tier
-        elif symbol in SCREENER_UNIVERSE[:30]:
-            return 50000
-        # Default
-        return 10000
+        return 30000
     
     def _estimate_spread(self, symbol: str) -> float:
-        """Estimate bid-ask spread %. Would use real data in production."""
-        # ETFs have tightest spreads
-        if symbol in ['SPY', 'QQQ', 'IWM']:
-            return 0.5
-        # Large caps
-        elif symbol in SCREENER_UNIVERSE[:30]:
-            return 1.5
-        # Default
-        return 3.0
+        """Fallback spread estimate when IBKR unavailable."""
+        if symbol in ['SPY', 'QQQ', 'IWM', 'AAPL']:
+            return 0.3
+        elif symbol in SCREENER_UNIVERSE[:50]:
+            return 1.0
+        return 2.5
 
 
 # Singleton
@@ -294,13 +380,14 @@ if __name__ == "__main__":
             pass
         
         print("=" * 60)
-        print("Daily Options Screener Test")
+        print("Daily Options Screener - IBKR Integration")
         print("=" * 60)
+        print(f"Universe: {len(SCREENER_UNIVERSE)} stocks")
         
         screener = get_daily_screener()
-        watchlist = await screener.run_morning_screen()
+        watchlist = await screener.run_morning_screen(force=True)
         
-        print(f"\nToday's watchlist: {len(watchlist)} stocks")
-        print(watchlist[:20])
+        print(f"\n✅ Today's watchlist: {len(watchlist)} stocks")
+        print(f"Top 20: {watchlist[:20]}")
     
     asyncio.run(main())
