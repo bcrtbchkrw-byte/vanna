@@ -347,6 +347,120 @@ class DataMaintenanceManager:
         
         return results
     
+    async def merge_live_to_parquet(self) -> Dict[str, int]:
+        """
+        Merge live data from SQLite live_bars into parquet files.
+        
+        Steps:
+        1. Load new data from live_bars table (SQLite)
+        2. Load existing data from *_1min.parquet
+        3. Merge and deduplicate by timestamp
+        4. Save updated *_1min.parquet
+        5. Recalculate Greeks for *_1min_vanna.parquet
+        
+        Returns:
+            Dict with merge statistics per symbol
+        """
+        import sqlite3
+        from ml.vectorized_greeks import VectorizedGreeksCalculator
+        
+        logger.info("=" * 60)
+        logger.info("🔄 Merging Live Data to Parquet")
+        logger.info("=" * 60)
+        
+        results = {}
+        db_path = self.storage.db_path
+        
+        for symbol in self.SYMBOLS:
+            try:
+                # 1. Load live data from SQLite
+                with sqlite3.connect(db_path) as conn:
+                    query = """
+                        SELECT timestamp, symbol, open, high, low, close, volume,
+                               vix, vix3m, vix_ratio, regime, sin_time, cos_time,
+                               options_iv_atm, options_volume, options_put_call_ratio
+                        FROM live_bars 
+                        WHERE symbol = ? AND timeframe = '1min'
+                        ORDER BY timestamp
+                    """
+                    live_df = pd.read_sql_query(query, conn, params=[symbol])
+                
+                if live_df.empty:
+                    logger.info(f"⏭️ {symbol}: No live data to merge")
+                    results[symbol] = 0
+                    continue
+                
+                live_df['timestamp'] = pd.to_datetime(live_df['timestamp'])
+                logger.info(f"📊 {symbol}: Found {len(live_df):,} live bars")
+                
+                # 2. Load existing parquet
+                parquet_path = self.storage.data_dir / f"{symbol}_1min.parquet"
+                
+                if parquet_path.exists():
+                    existing_df = pd.read_parquet(parquet_path)
+                    existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'])
+                    logger.info(f"   Existing: {len(existing_df):,} bars")
+                else:
+                    existing_df = pd.DataFrame()
+                    logger.info(f"   No existing parquet, creating new")
+                
+                # 3. Merge and deduplicate
+                if not existing_df.empty:
+                    # Align columns
+                    common_cols = list(set(existing_df.columns) & set(live_df.columns))
+                    live_df = live_df[common_cols]
+                    existing_df = existing_df[common_cols]
+                    
+                    merged_df = pd.concat([existing_df, live_df], ignore_index=True)
+                else:
+                    merged_df = live_df
+                
+                # Remove duplicates by timestamp
+                merged_df = merged_df.drop_duplicates(subset=['timestamp'], keep='last')
+                merged_df = merged_df.sort_values('timestamp').reset_index(drop=True)
+                
+                new_bars = len(merged_df) - len(existing_df) if not existing_df.empty else len(merged_df)
+                logger.info(f"   After merge: {len(merged_df):,} bars (+{new_bars} new)")
+                
+                # 4. Save updated parquet
+                merged_df.to_parquet(parquet_path, index=False, compression='snappy')
+                logger.info(f"   ✅ Saved {parquet_path.name}")
+                
+                results[symbol] = new_bars
+                
+            except Exception as e:
+                logger.error(f"❌ Error merging {symbol}: {e}")
+                results[symbol] = -1
+        
+        # 5. Recalculate Greeks for all updated files
+        await self._recalculate_vanna_parquet()
+        
+        logger.info("=" * 60)
+        logger.info(f"Merge complete: {sum(v for v in results.values() if v > 0)} new bars added")
+        logger.info("=" * 60)
+        
+        return results
+    
+    async def _recalculate_vanna_parquet(self):
+        """Recalculate Greeks for all *_1min.parquet files."""
+        from ml.vectorized_greeks import VectorizedGreeksCalculator
+        
+        logger.info("📐 Recalculating Greeks...")
+        calculator = VectorizedGreeksCalculator()
+        
+        for symbol in self.SYMBOLS:
+            input_path = self.storage.data_dir / f"{symbol}_1min.parquet"
+            output_path = self.storage.data_dir / f"{symbol}_1min_vanna.parquet"
+            
+            if not input_path.exists():
+                continue
+            
+            try:
+                calculator.process_parquet_file(str(input_path), str(output_path))
+                logger.info(f"   ✅ {symbol}_1min_vanna.parquet updated")
+            except Exception as e:
+                logger.error(f"   ❌ Error calculating Greeks for {symbol}: {e}")
+    
     def should_run_monthly_maintenance(self) -> bool:
         """Check if today is maintenance day (1st of month)."""
         return datetime.now().day == 1
