@@ -319,6 +319,103 @@ class TradeSuccessPredictor:
             key=lambda x: -x[1]
         )
         return dict(sorted_features[:top_n])
+    
+    def predict_probability(self, trade_setup: Dict[str, Any]) -> float:
+        """
+        Predict probability of profit from trade setup dict.
+        
+        This is the simple interface for quick predictions.
+        
+        Args:
+            trade_setup: Dict with 'symbol', 'strategy', 'market_data'
+            
+        Returns:
+            Float 0.0 to 1.0 (Probability of Success)
+        """
+        market = trade_setup.get('market_data', {})
+        vix = market.get('vix', 18)
+        iv_rank = market.get('iv_rank', 0.5)
+        strategy = trade_setup.get('strategy', 'UNKNOWN')
+        symbol = trade_setup.get('symbol', 'UNKNOWN')
+        
+        # Try using trained model
+        if self.model is not None:
+            try:
+                # Build feature dict
+                features = {
+                    'vix': vix,
+                    'vix_ratio': market.get('vix_ratio', 1.0),
+                    'vix_in_contango': 1 if market.get('vix_ratio', 1.0) < 1 else 0,
+                    'vix_change_1d': market.get('vix_change_1d', 0),
+                    'vix_percentile': market.get('vix_percentile', 50),
+                    'vix_zscore': market.get('vix_zscore', 0),
+                    'regime': market.get('regime', 1),
+                    'sin_time': 0, 'cos_time': 0, 'sin_dow': 0, 'cos_dow': 0,
+                    'return_1m': market.get('return_1m', 0),
+                    'return_5m': market.get('return_5m', 0),
+                    'volatility_20': market.get('volatility_20', 0.02),
+                    'momentum_20': market.get('momentum_20', 0),
+                    'delta': market.get('delta', -0.16),
+                    'gamma': market.get('gamma', 0),
+                    'theta': market.get('theta', 0),
+                    'vega': market.get('vega', 0),
+                    'vanna': market.get('vanna', 0),
+                    'charm': market.get('charm', 0),
+                    'volga': market.get('volga', 0),
+                }
+                
+                prob = self.predict_proba(features)
+                logger.debug(f"🤖 ML Prediction ({symbol}/{strategy}): {prob:.1%}")
+                return float(prob)
+                
+            except Exception as e:
+                logger.debug(f"Model prediction failed, using fallback: {e}")
+        
+        # Rule-based fallback (no random!)
+        prob = self._calculate_rule_based_prob(vix, iv_rank, strategy)
+        logger.debug(f"📐 Rule-based Prediction ({symbol}/{strategy}): {prob:.1%}")
+        return prob
+    
+    def _calculate_rule_based_prob(
+        self, 
+        vix: float, 
+        iv_rank: float,
+        strategy: str
+    ) -> float:
+        """
+        Rule-based probability calculation.
+        
+        NO RANDOM! Uses deterministic rules based on market conditions.
+        """
+        base_prob = 0.50  # Neutral baseline
+        
+        # VIX adjustments for credit strategies
+        if strategy in ['BULL_PUT_SPREAD', 'BEAR_CALL_SPREAD', 'IRON_CONDOR', 
+                        'IRON_BUTTERFLY', 'JADE_LIZARD']:
+            # High VIX = better for premium selling
+            if vix > 25:
+                base_prob += 0.15
+            elif vix > 20:
+                base_prob += 0.10
+            elif vix < 15:
+                base_prob -= 0.10
+            
+            # High IV rank = sell premium
+            if iv_rank > 0.7:
+                base_prob += 0.10
+            elif iv_rank > 0.5:
+                base_prob += 0.05
+        
+        # Debit strategies prefer low IV
+        elif strategy in ['PUT_DEBIT_SPREAD', 'CALL_DEBIT_SPREAD', 
+                          'POOR_MANS_COVERED_CALL']:
+            if iv_rank < 0.3:
+                base_prob += 0.10
+            elif iv_rank > 0.7:
+                base_prob -= 0.10
+        
+        # Clamp to valid range
+        return max(0.20, min(0.85, base_prob))
 
 
 # Singleton
@@ -333,6 +430,11 @@ def get_trade_success_predictor(
     if _predictor is None:
         _predictor = TradeSuccessPredictor(model_path)
     return _predictor
+
+
+# Backward compatibility aliases
+TradePredictor = TradeSuccessPredictor  # Alias for old code
+get_trade_predictor = get_trade_success_predictor  # Alias for old imports
 
 
 # ============================================================

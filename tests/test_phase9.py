@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 from ml.features import FeatureEngineer
-from ml.predictor import TradePredictor
+from ml.trade_success_predictor import TradePredictor
 
 
 def test_feature_engineering():
