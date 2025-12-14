@@ -97,14 +97,17 @@ def get_logger():
         loguru.Logger: The configured logger
     
     Note:
-        Call setup_logger() before using this function.
-        If logger is not initialized, a warning is logged.
+        If logger is not initialized, a minimal console handler is added.
     """
     global _logger_initialized
     
     if not _logger_initialized:
-        # Add minimal console handler for warnings
-        logger.add(sys.stderr, level="WARNING", format="{message}")
-        logger.warning("Logger not initialized! Call setup_logger() first.")
+        # Auto-init with minimal config (just console)
+        logger.add(
+            sys.stderr, 
+            level="INFO", 
+            format="{time:HH:mm:ss} | {level: <8} | {message}"
+        )
+        _logger_initialized = True
     
     return logger
