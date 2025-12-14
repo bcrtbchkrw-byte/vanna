@@ -184,6 +184,25 @@ class DailyOptionsScreener:
             logger.info(f"Using cached watchlist from {today}: {len(self._today_watchlist)} symbols")
             return self._today_watchlist
         
+        # Skip weekends - no point in screening when market is closed
+        from datetime import datetime
+        import pytz
+        
+        et = pytz.timezone('US/Eastern')
+        now_et = datetime.now(et)
+        
+        if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
+            logger.info(f"⏸️ Weekend - skipping screening (day={now_et.strftime('%A')})")
+            return self._today_watchlist if self._today_watchlist else []
+        
+        # Skip outside market hours (pre-9:25 AM or after 4:05 PM)
+        market_open = now_et.replace(hour=9, minute=25, second=0, microsecond=0)
+        market_close = now_et.replace(hour=16, minute=5, second=0, microsecond=0)
+        
+        if not force and (now_et < market_open or now_et > market_close):
+            logger.info(f"⏸️ Market closed - skipping screening ({now_et.strftime('%H:%M')} ET)")
+            return self._today_watchlist if self._today_watchlist else []
+        
         logger.info("=" * 60)
         logger.info(f"🌅 MORNING SCREEN - {today}")
         logger.info(f"   Universe: {len(SCREENER_UNIVERSE)} stocks")
