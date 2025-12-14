@@ -41,10 +41,14 @@ class VectorizedGreeksCalculator:
         iv_col: str = 'iv',
         dte_days: float = 30,
         strike_offset_pct: float = 0.05,  # 5% OTM
-        option_type: str = 'put'
+        option_type: str = 'put',
+        dividend_yield: float = 0.0
     ) -> pd.DataFrame:
         """
         Add Greeks columns to DataFrame using vectorized operations.
+        
+        Using Generalized Black-Scholes (Merton Model) with Cost of Carry.
+        b = r - q (Cost of Carry = risk-free rate - dividend yield)
         
         For historical equity data without options IV, we estimate:
         - IV from VIX (if available) or use default 25%
@@ -58,6 +62,7 @@ class VectorizedGreeksCalculator:
             dte_days: Days to expiration assumption
             strike_offset_pct: Strike distance from ATM (0.05 = 5% OTM)
             option_type: 'call' or 'put' for moneyness direction
+            dividend_yield: Annual dividend yield (decimal, e.g. 0.015 for 1.5%)
             
         Returns:
             DataFrame with Greek columns added
@@ -65,7 +70,7 @@ class VectorizedGreeksCalculator:
         df = df.copy()
         n = len(df)
         
-        logger.info(f"Calculating vectorized Greeks for {n:,} rows...")
+        logger.info(f"Calculating vectorized Greeks for {n:,} rows (div_yield={dividend_yield:.2%})...")
         
         # Get underlying price
         S = df[price_col].values.astype(np.float64)
@@ -94,16 +99,19 @@ class VectorizedGreeksCalculator:
         # Time to expiry in years
         T = np.full(n, dte_days / 365.0)
         
-        # Risk-free rate
+        # Risk-free rate and Dividend Yield
         r = self.r
+        q = dividend_yield
+        b = r - q  # Cost of carry
         
         # ================================================================
-        # VECTORIZED BLACK-SCHOLES GREEKS
+        # VECTORIZED GENERALIZED BLACK-SCHOLES (Merton)
         # ================================================================
         
         # d1 and d2
+        # d1 = [ln(S/K) + (b + sigma^2/2)T] / (sigma * sqrt(T))
         sqrt_T = np.sqrt(T)
-        d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt_T)
+        d1 = (np.log(S / K) + (b + 0.5 * sigma**2) * T) / (sigma * sqrt_T)
         d2 = d1 - sigma * sqrt_T
         
         # PDF and CDF
@@ -111,30 +119,43 @@ class VectorizedGreeksCalculator:
         N_d1 = norm.cdf(d1)    # Standard normal CDF
         N_d2 = norm.cdf(d2)
         
-        # Discount factor
+        # Discount factors
         exp_rT = np.exp(-r * T)
+        exp_qT = np.exp(-q * T)  # Dividend discount
         
         # ================================================================
         # FIRST-ORDER GREEKS
         # ================================================================
         
         if option_type.lower() == 'call':
-            delta = N_d1
-            theta = (
-                -S * phi_d1 * sigma / (2 * sqrt_T)
-                - r * K * exp_rT * N_d2
-            ) / 365  # Daily theta
+            # Delta = e^-qT * N(d1)
+            delta = exp_qT * N_d1
+            
+            # Theta (Merton)
+            term1 = -S * exp_qT * phi_d1 * sigma / (2 * sqrt_T)
+            term2 = -r * K * exp_rT * N_d2
+            term3 = q * S * exp_qT * N_d1
+            theta = (term1 + term2 + term3) / 365.0
+            
             rho = K * T * exp_rT * N_d2 / 100
+            
         else:  # put
-            delta = N_d1 - 1
-            theta = (
-                -S * phi_d1 * sigma / (2 * sqrt_T)
-                + r * K * exp_rT * norm.cdf(-d2)
-            ) / 365
+            # Delta = e^-qT * (N(d1) - 1)
+            delta = exp_qT * (N_d1 - 1)
+            
+            # Theta (Merton)
+            term1 = -S * exp_qT * phi_d1 * sigma / (2 * sqrt_T)
+            term2 = r * K * exp_rT * norm.cdf(-d2)
+            term3 = -q * S * exp_qT * norm.cdf(-d1)
+            theta = (term1 + term2 + term3) / 365.0
+            
             rho = -K * T * exp_rT * norm.cdf(-d2) / 100
         
-        gamma = phi_d1 / (S * sigma * sqrt_T)
-        vega = S * phi_d1 * sqrt_T / 100  # Per 1% IV move
+        # Gamma = e^-qT * phi(d1) / (S * sigma * sqrt(T))
+        gamma = exp_qT * phi_d1 / (S * sigma * sqrt_T)
+        
+        # Vega = S * e^-qT * phi(d1) * sqrt(T)
+        vega = S * exp_qT * phi_d1 * sqrt_T / 100  # Per 1% IV move
         
         # ================================================================
         # SECOND-ORDER GREEKS (Vanna, Charm, Volga)
