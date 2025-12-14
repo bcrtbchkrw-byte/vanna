@@ -264,20 +264,76 @@ class PortfolioManager:
             current_risk = await self.calculate_portfolio_risk(current_positions, prices, net_liq)
             current_bwd = current_risk['beta_weighted_delta']
             
-            # 3. Calculate Trade Impact
-            # Assume 1 unit (or signal.quantity if available)
-            # Default to 1 spread or 100 shares equivalent? 
-            # Signal often doesn't have quantity yet (OrderManager decides).
-            # Assume max size: e.g. 1 contract (~50 delta default for spreads? or 16 delta?)
-            # Bull Put Spread 16 Delta Short / 5 Delta Long -> Net 11 Delta.
-            # Let's be conservative: Net Delta = 0.20 per contract (credit spread)
+            # 3. Calculate Trade Impact (Dynamic Greeks)
+            # Instead of hardcoding 0.20, we estimate the delta of the intended strategy.
+            # Assumption: Standard entry is Short Put / Bull Put Spread approx 5% OTM, 30 DTE.
+            # This makes risk check sensitive to Volatility (Vanna).
             
             trade_qty = 1 # contract
-            unit_delta = 0.20 if signal.action == "OPEN" else -0.20 # Direction?
-            # OPEN BULL PUT = Positive Delta (Long Market)
             
-            if "PUT" in str(signal.action) or "BULL" in str(signal.action): # Simplified
-                 unit_delta = 0.20
+            # Determine params for theoretical contract
+            t_days = 30
+            T = t_days / 365.0
+            
+            # Estimate IV from VIX if available, else 0.4
+            vix = await self.data_fetcher.get_vix()
+            sigma = (vix / 100.0) if vix else 0.4
+            
+            # Determine Strike (5% OTM for Puts)
+            if "PUT" in str(signal.action) or "BULL" in str(signal.action) or signal.action == "OPEN":
+                 # Bullish: Short Put at 0.95 * Price
+                 K = price * 0.95
+                 option_type = 'put'
+                 direction = 1.0 # Long delta (Short Put is bullish/positive delta)
+            else:
+                 # Bearish: Long Put or Short Call? 
+                 # Assuming Long Put for simplicity or Short Call OTM
+                 K = price * 1.05
+                 option_type = 'call' 
+                 direction = -1.0 # Short delta
+            
+            # Calculate REAL delta for this theoretical contract
+            greeks = self.vanna_calc.calculate_greeks_american(
+                S=price, K=K, T=T, sigma=sigma, option_type=option_type
+            )
+            
+            if greeks:
+                # If we are selling the option (Credits), we flip the sign of the option delta.
+                # Put Delta is negative. Short Put Delta is Positive.
+                # Call Delta is positive. Short Call Delta is Negative.
+                # We want the resulting position delta.
+                
+                # Standard Logic: 
+                # OPEN (Bullish) -> Short Put. 
+                # greeks.delta for Put is negative (e.g. -0.3).
+                # Shorting it gives +0.3.
+                
+                # OPEN (Bearish) -> Long Put? or Short Call?
+                # Let's assume Long Put for bearish.
+                # greeks.delta for Put is negative. Position is negative.
+                
+                # Let's align with signal.action "OPEN" (usually Bullish/Long in this bot?)
+                # If signal.action is just "OPEN", we check 'sentiment' or assume Bullish if not specified?
+                # The TradeSignal usually has 'action' as OPEN/CLOSE. Direction implied by... features?
+                # Actually pipeline.py maps 0:HOLD, 1:OPEN, 2:CLOSE.
+                # It doesn't specify Long/Short.
+                # Usually purely Long/Short strategy determines this.
+                # Let's assume OPEN = Bullish (default) for now, or check generic "OPEN" logic.
+                # For safety, we treat it as adding Positive Delta (Long Market).
+                
+                raw_delta = greeks.delta
+                
+                # If Bullish (Short Put)
+                if direction > 0:
+                     # Put delta is neg. We want pos.
+                     unit_delta = abs(raw_delta) 
+                else:
+                     # Bearish (Long Put)
+                     unit_delta = -abs(raw_delta)
+                     
+                logger.debug(f"Estimated Trade Delta (S={price:.2f}, K={K:.2f}, Vol={sigma:.2f}): {unit_delta:.3f}")
+            else:
+                unit_delta = 0.20 * direction
             
             beta = await self.get_beta(signal.symbol)
             
