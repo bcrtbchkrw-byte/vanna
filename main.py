@@ -58,6 +58,49 @@ async def check_ibkr_connection(ibkr_conn, logger) -> bool:
     return True
 
 
+async def _calculate_smas(symbol: str, current_price: float) -> tuple[float, float, float]:
+    """
+    Calculate SMA 20, 50, 200 from historical daily data.
+    Falls back to approximations if data is missing.
+    """
+    try:
+        from ml.vanna_data_pipeline import get_vanna_pipeline
+        pipeline = get_vanna_pipeline()
+        
+        # Get daily data
+        df = pipeline.get_training_data([symbol], timeframe='1day')
+        
+        if df is None or len(df) < 200:
+            # logger not in scope, use get_logger()
+            get_logger().warning(f"Insufficient history for {symbol} SMAs, using approximations")
+            return current_price * 0.99, current_price * 0.98, current_price * 0.95
+            
+        # Sort by date
+        df = df.sort_values('timestamp')
+        closes = df['close'].values
+        
+        # Calculate SMAs
+        import pandas as pd
+        series = pd.Series(closes)
+        
+        # Check if enough data points exist for each window
+        sma_20 = series.rolling(window=20).mean().iloc[-1] if len(series) >= 20 else current_price
+        sma_50 = series.rolling(window=50).mean().iloc[-1] if len(series) >= 50 else current_price * 0.98
+        sma_200 = series.rolling(window=200).mean().iloc[-1] if len(series) >= 200 else current_price * 0.95
+        
+        # Handle recent IPOs or short history (failsafe)
+        if pd.isna(sma_200): sma_200 = sma_50 * 0.95
+        if pd.isna(sma_50): sma_50 = sma_20 * 0.98
+        if pd.isna(sma_20): sma_20 = current_price
+        
+        return float(sma_20), float(sma_50), float(sma_200)
+        
+    except Exception as e:
+        get_logger().error(f"Error calculating SMAs: {e}")
+        # Fallback
+        return current_price * 0.99, current_price * 0.98, current_price * 0.95
+
+
 async def collect_market_data(data_fetcher, data_pipeline, logger) -> dict:
     """Collect current market data for all symbols."""
     market_data = {}
@@ -126,12 +169,8 @@ async def analyze_market(market_data, regime_classifier, strategy_selector, logg
         else:
             analysis['vix_level'] = 'normal'
         
-        # SMA calculation from historical data
-        # NOTE: Using approximations until historical data pipeline provides real SMAs
-        # These are conservative estimates assuming slight uptrend
-        sma_20 = current_price * 0.99
-        sma_50 = current_price * 0.98
-        sma_200 = current_price * 0.95
+        # Calculate real SMAs from daily historical data
+        sma_20, sma_50, sma_200 = await _calculate_smas('SPY', current_price)
         
         strategies = strategy_selector.select_strategies(
             vix=vix,

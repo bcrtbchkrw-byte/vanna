@@ -171,6 +171,30 @@ class TradingAgent:
         
         action, _ = self.model.predict(obs, deterministic=deterministic)
         return int(action)
+
+    def predict_with_confidence(self, obs: np.ndarray, deterministic: bool = True) -> tuple[int, float]:
+        """Predict action with confidence score."""
+        if self.model is None:
+            self.load()
+            
+        # Get action
+        action, _ = self.model.predict(obs, deterministic=deterministic)
+        action_int = int(action)
+        
+        try:
+            # Get probabilities from policy
+            import torch
+            with torch.no_grad():
+                obs_tensor = self.model.policy.obs_to_tensor(obs)[0]
+                distribution = self.model.policy.get_distribution(obs_tensor)
+                probs = distribution.distribution.probs
+                
+                # Get probability of selected action
+                confidence = float(probs[0][action_int].item())
+                return action_int, confidence
+        except Exception as e:
+            logger.warning(f"Could not get confidence: {e}")
+            return action_int, 0.0
     
     def save(self):
         """Save model and normalizer."""
@@ -196,7 +220,14 @@ class TradingAgent:
         # Load normalizer first if exists
         norm_file = self.model_path / "vec_normalize.pkl"
         if norm_file.exists():
-            self.vec_env = VecNormalize.load(str(norm_file), make_vec_env())
+            # Load normalizer with proper symbols
+            dummy_env = make_vec_env(
+                symbols=get_available_symbols()[:1],
+                n_envs_per_symbol=1,
+                use_subproc=False,
+                normalize=False  # Don't normalize twice
+            )
+            self.vec_env = VecNormalize.load(str(norm_file), dummy_env)
         
         self.model = PPO.load(str(model_file), env=self.vec_env)
         logger.info(f"Loaded model from {model_file}")
@@ -216,8 +247,8 @@ if __name__ == "__main__":
     
     try:
         setup_logger(level="INFO")
-    except:
-        pass
+    except Exception as e:
+        print(f"Logger setup failed: {e}")
     
     print("=" * 60)
     print("PPO Trading Agent Training")

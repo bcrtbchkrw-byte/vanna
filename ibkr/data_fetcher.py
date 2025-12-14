@@ -31,6 +31,9 @@ class IBKRDataFetcher:
     
     def __init__(self):
         self._connection = None
+        # Load timeout from config
+        from config import get_config
+        self._data_timeout = get_config().ibkr.data_timeout
     
     async def _get_connection(self):
         """Get IBKR connection (lazy initialization)."""
@@ -63,7 +66,7 @@ class IBKRDataFetcher:
             await conn.ib.qualifyContractsAsync(contract)
             
             ticker = conn.ib.reqMktData(contract, '', False, False)
-            await asyncio.sleep(3)  # Wait for data (IBKR pacing)
+            await asyncio.sleep(self._data_timeout)  # Configurable timeout
             
             quote = {
                 "symbol": symbol,
@@ -108,7 +111,7 @@ class IBKRDataFetcher:
             await conn.ib.qualifyContractsAsync(vix)
             
             ticker = conn.ib.reqMktData(vix, '', False, False)
-            await asyncio.sleep(3)  # Wait for VIX data
+            await asyncio.sleep(self._data_timeout)  # Configurable timeout
             
             vix_value = ticker.last if ticker.last and ticker.last > 0 else ticker.close
             
@@ -159,7 +162,7 @@ class IBKRDataFetcher:
             
             # Get current price
             ticker = conn.ib.reqMktData(stock, '', False, False)
-            await asyncio.sleep(3)  # Wait for option chain data
+            await asyncio.sleep(self._data_timeout)  # Configurable timeout
             current_price = ticker.last or ticker.close
             conn.ib.cancelMktData(stock)
             
@@ -206,6 +209,54 @@ class IBKRDataFetcher:
             
             logger.info(f"⚙️ Fetching option chain for {symbol} exp={expiry}, {len(selected_strikes)} strikes")
             
+            # Fetch option data for each strike
+            from ib_insync import Option
+            
+            for strike in selected_strikes:
+                for right in ['C', 'P']:
+                    try:
+                        opt_contract = Option(
+                            symbol=symbol,
+                            lastTradeDateOrContractMonth=expiry,
+                            strike=strike,
+                            right=right,
+                            exchange='SMART',
+                            currency='USD'
+                        )
+                        
+                        # Qualify and get data
+                        await conn.ib.qualifyContractsAsync(opt_contract)
+                        ticker = conn.ib.reqMktData(opt_contract, '101,106', False, False)
+                        await asyncio.sleep(0.5)  # Brief wait for each option
+                        
+                        greeks = ticker.modelGreeks or ticker.lastGreeks
+                        
+                        option_data = {
+                            "strike": strike,
+                            "right": right,
+                            "bid": ticker.bid if ticker.bid and ticker.bid > 0 else 0,
+                            "ask": ticker.ask if ticker.ask and ticker.ask > 0 else 0,
+                            "last": ticker.last if ticker.last and ticker.last > 0 else 0,
+                            "volume": ticker.volume if ticker.volume else 0,
+                            "delta": greeks.delta if greeks else 0,
+                            "gamma": greeks.gamma if greeks else 0,
+                            "theta": greeks.theta if greeks else 0,
+                            "vega": greeks.vega if greeks else 0,
+                            "iv": greeks.impliedVol if greeks else 0
+                        }
+                        
+                        conn.ib.cancelMktData(opt_contract)
+                        
+                        if right == 'C':
+                            result["calls"].append(option_data)
+                        else:
+                            result["puts"].append(option_data)
+                            
+                    except Exception as opt_e:
+                        logger.debug(f"Could not fetch {symbol} {strike}{right}: {opt_e}")
+                        continue
+            
+            logger.info(f"✅ Option chain: {len(result['calls'])} calls, {len(result['puts'])} puts")
             return result
             
         except Exception as e:
@@ -240,7 +291,7 @@ class IBKRDataFetcher:
             
             # 106 = Option Implied Vol, 101 = Open Interest
             ticker = conn.ib.reqMktData(contract, '101,106', False, False)
-            await asyncio.sleep(4)  # Wait for Greeks data
+            await asyncio.sleep(self._data_timeout + 1)  # Greeks need slightly more time
             
             greeks = ticker.modelGreeks or ticker.lastGreeks
             

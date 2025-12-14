@@ -477,8 +477,8 @@ if __name__ == "__main__":
     # Try to setup logger, fallback to print
     try:
         setup_logger(level="INFO")
-    except:
-        pass
+    except Exception as e:
+        print(f"Logger setup failed: {e}")
     
     print("=" * 60)
     print("TradeSuccessPredictor Training")

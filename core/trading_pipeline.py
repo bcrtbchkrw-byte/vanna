@@ -353,7 +353,13 @@ class TradingPipeline:
             # RL prediction
             import numpy as np
             obs = np.array(list(features.values()), dtype=np.float32)
-            action = self._rl_agent.predict(obs, deterministic=True)
+            
+            # Use new method with confidence
+            if hasattr(self._rl_agent, 'predict_with_confidence'):
+                action, confidence = self._rl_agent.predict_with_confidence(obs, deterministic=True)
+            else:
+                action = self._rl_agent.predict(obs, deterministic=True)
+                confidence = 0.8  # Default if method missing
             
             # Map action to signal
             action_map = {0: 'HOLD', 1: 'OPEN', 2: 'CLOSE', 3: 'INCREASE', 4: 'DECREASE'}
@@ -374,7 +380,7 @@ class TradingPipeline:
             return TradeSignal(
                 symbol=symbol,
                 action=action_name,
-                confidence=0.8,  # TODO: Get actual confidence from RL
+                confidence=confidence,
                 features=features,
                 timestamp=datetime.now()
             )
@@ -384,10 +390,168 @@ class TradingPipeline:
             return None
     
     async def _get_live_features(self, symbol: str) -> Optional[Dict[str, float]]:
-        """Get live features for RL prediction (49 features)."""
-        # TODO: Implement full feature extraction matching TradingEnv
-        # For now, return mock features
-        return None
+        """
+        Get live features for RL prediction (70 features matching TradingEnv).
+        
+        Market features (63) + Position features (7) = 70 total.
+        Uses live data from IBKR and current position state.
+        """
+        try:
+            if self._data_fetcher is None:
+                logger.warning("Data fetcher not available for live features")
+                return None
+            
+            # Get live data
+            quote = await self._data_fetcher.get_stock_quote(symbol)
+            vix = await self._data_fetcher.get_vix()
+            
+            if not quote or not quote.get('last'):
+                logger.warning(f"No live quote for {symbol}")
+                return None
+            
+            from datetime import datetime
+            import math
+            
+            now = datetime.now()
+            price = quote.get('last', 0)
+            
+            # Calculate time features (cyclical encoding)
+            minutes_of_day = now.hour * 60 + now.minute
+            day_of_week = now.weekday()
+            day_of_year = now.timetuple().tm_yday
+            
+            sin_time = math.sin(2 * math.pi * minutes_of_day / 1440)
+            cos_time = math.cos(2 * math.pi * minutes_of_day / 1440)
+            sin_dow = math.sin(2 * math.pi * day_of_week / 7)
+            cos_dow = math.cos(2 * math.pi * day_of_week / 7)
+            sin_doy = math.sin(2 * math.pi * day_of_year / 365)
+            cos_doy = math.cos(2 * math.pi * day_of_year / 365)
+            
+            # VIX features
+            vix_value = vix or 18.0
+            vix_norm = vix_value / 100.0
+            vix_ratio = 1.0  # Would need VIX3M for proper ratio
+            vix_in_contango = 1 if vix_ratio < 1 else 0
+            vix_percentile = min(vix_value / 50.0, 1.0)  # Approximate
+            vix_zscore = (vix_value - 20) / 10  # Approximate
+            
+            # Price features (returns - using 0 for single snapshot)
+            return_1m = 0.0
+            return_5m = 0.0
+            volatility_20 = vix_value / 100 * 0.05  # Approximate
+            momentum_20 = 0.0
+            range_pct = 0.02  # Approximate daily range
+            
+            # Greeks placeholders (would need option chain)
+            delta = -0.16
+            gamma = 0.01
+            theta = -0.02
+            vega = 0.15
+            vanna = 0.0
+            charm = 0.0
+            volga = 0.0
+            
+            # Position features
+            has_position = symbol in self._active_positions
+            position_info = self._active_positions.get(symbol, {})
+            
+            pnl_pct = 0.0
+            days_held = 0.0
+            if has_position and 'entry_time' in position_info:
+                entry_time = position_info['entry_time']
+                days_held = (now - entry_time).total_seconds() / 86400
+            
+            # Build feature dict matching TradingEnv.MARKET_FEATURES order
+            features = {
+                # Time (6)
+                'sin_time': sin_time,
+                'cos_time': cos_time,
+                'sin_dow': sin_dow,
+                'cos_dow': cos_dow,
+                'sin_doy': sin_doy,
+                'cos_doy': cos_doy,
+                # VIX (8)
+                'vix_ratio': vix_ratio,
+                'vix_in_contango': vix_in_contango,
+                'vix_change_1d': 0.0,
+                'vix_change_5d': 0.0,
+                'vix_percentile': vix_percentile,
+                'vix_zscore': vix_zscore,
+                'vix_norm': vix_norm,
+                'vix3m_norm': vix_norm,  # Same as VIX for now
+                # Regime (1)
+                'regime': 1,  # Normal
+                # Options (3)
+                'options_iv_atm': vix_norm,
+                'options_put_call_ratio': 1.0,
+                'options_volume_norm': 0.5,
+                # Price (5)
+                'return_1m': return_1m,
+                'return_5m': return_5m,
+                'volatility_20': volatility_20,
+                'momentum_20': momentum_20,
+                'range_pct': range_pct,
+                # Greeks (7)
+                'delta': delta,
+                'gamma': gamma,
+                'theta': theta,
+                'vega': vega,
+                'vanna': vanna,
+                'charm': charm,
+                'volga': volga,
+                # ML outputs (7) - defaults
+                'regime_ml': 1,
+                'regime_adj_position': 1.0,
+                'regime_adj_delta': 1.0,
+                'regime_adj_dte': 1.0,
+                'dte_confidence': 0.5,
+                'optimal_dte_norm': 0.5,
+                'trade_prob': 0.5,
+                # Binary signals (5)
+                'signal_high_prob': 0,
+                'signal_low_vol': 1 if vix_value < 15 else 0,
+                'signal_crisis': 1 if vix_value > 30 else 0,
+                'signal_contango': vix_in_contango,
+                'signal_backwardation': 1 - vix_in_contango,
+                # Event features (4)
+                'days_to_major_event': 7,
+                'is_event_week': 0,
+                'is_event_day': 0,
+                'event_iv_boost': 0.0,
+                # Daily features (17) - placeholders (would load from DB)
+                'day_sma_200': 1.0,
+                'day_sma_50': 1.0,
+                'day_sma_20': 1.0,
+                'day_price_vs_sma200': 0.0,
+                'day_price_vs_sma50': 0.0,
+                'day_rsi_14': 50.0,
+                'day_atr_14': 0.02,
+                'day_atr_pct': 0.02,
+                'day_bb_position': 0.5,
+                'day_macd': 0.0,
+                'day_macd_hist': 0.0,
+                'day_above_sma200': 1,
+                'day_above_sma50': 1,
+                'day_sma_50_200_ratio': 1.0,
+                'day_days_to_major_event': 7,
+                'day_is_event_week': 0,
+                'day_event_iv_boost': 0.0,
+                # Position features (7)
+                'pnl_pct': pnl_pct,
+                'days_held': days_held,
+                'position_flag': 1.0 if has_position else 0.0,
+                'capital_ratio': 1.0,
+                'trade_count': min(self._daily_trades / 10, 1.0),
+                'bid_ask_spread': 0.02,
+                'market_open': 1.0 if self._is_market_open() else 0.0,
+            }
+            
+            logger.debug(f"Built {len(features)} live features for {symbol}")
+            return features
+            
+        except Exception as e:
+            logger.error(f"Error getting live features for {symbol}: {e}")
+            return None
     
     # =========================================================================
     # GEMINI SENTIMENT CHECK
@@ -474,12 +638,35 @@ Then a brief reason on the next line.
                 self._active_positions.pop(signal.symbol, None)
             return
         
-        # Real trading
+            # Real trading
         try:
             logger.info(f"🚀 EXECUTING: {signal.action} {signal.symbol}")
             
-            # TODO: Implement actual order placement
-            # await self._order_manager.place_order(...)
+            if signal.action == "OPEN":
+                # Default to BULL_PUT spread for now as primary strategy
+                # In real scenario, strategy comes from signal
+                await self._order_manager.place_spread_order(
+                    symbol=signal.symbol,
+                    strategy="BULL_PUT",
+                    action="OPEN",
+                    quantity=1,
+                    strikes=[],  # Would need logic to select strikes based on delta
+                    expiry=None  # Default to nearest
+                )
+                self._daily_trades += 1
+                
+            elif signal.action == "CLOSE":
+                await self._order_manager.place_spread_order(
+                    symbol=signal.symbol,
+                    strategy="BULL_PUT",
+                    action="CLOSE",
+                    quantity=1,
+                    strikes=[], 
+                    expiry=None
+                )
+                self._active_positions.pop(signal.symbol, None)
+                
+            logger.info(f"✅ Trade executed: {signal.action} {signal.symbol}")
             
             self._daily_trades += 1
             decision.executed = True

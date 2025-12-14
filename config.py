@@ -25,6 +25,7 @@ class IBKRConfig:
     password: str
     trading_mode: str
     client_id: int = 999
+    data_timeout: float = 3.0  # seconds to wait for market data
 
 
 @dataclass
@@ -94,6 +95,7 @@ class Config:
             username=os.getenv('IBKR_USERNAME', ''),
             password=os.getenv('IBKR_PASSWORD', ''),
             trading_mode=os.getenv('TRADING_MODE', 'paper'),
+            data_timeout=float(os.getenv('IBKR_DATA_TIMEOUT', '3.0')),
         )
         
         self.ai = AIConfig(
