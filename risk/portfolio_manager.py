@@ -112,8 +112,9 @@ class PortfolioManager:
             # if we absolutely have no data.
             sigma = 0.4 
             
-            # Calculate
-            greeks = self.vanna_calc.calculate_all_greeks(
+            # Calculate using American Model (CRR) by default for robustness
+            # (Most IBKR equity options are American)
+            greeks = self.vanna_calc.calculate_greeks_american(
                 S=under_price,
                 K=K,
                 T=T,
@@ -123,6 +124,14 @@ class PortfolioManager:
             
             if greeks:
                 return greeks.delta
+            
+            # Fallback to Black-Scholes if American fails (e.g. T=0)
+            greeks_bs = self.vanna_calc.calculate_all_greeks(
+                S=under_price, K=K, T=T, sigma=sigma, option_type=option_type
+            )
+            if greeks_bs:
+                return greeks_bs.delta
+                
             return 1.0 # Fail safe (worst case for stock/ITM) or 0.0?
             
         except Exception as e:

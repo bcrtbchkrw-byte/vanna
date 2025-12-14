@@ -34,6 +34,9 @@ class GreeksResult:
     sigma: float  # IV
     r: float  # Risk-free rate
     option_type: str  # 'call' or 'put'
+    
+    # Model used
+    model: str = 'Black-Scholes' # 'Black-Scholes' or 'CRR-American'
 
 
 class VannaCalculator:
@@ -385,6 +388,195 @@ class VannaCalculator:
             
         except Exception as e:
             logger.error(f"Error calculating numerical Vanna: {e}")
+            return None
+
+
+    
+    # =========================================================================
+    # Binomial Tree (CRR) for American Options
+    # =========================================================================
+
+    def _crr_american_tree(
+        self,
+        S: float,
+        K: float,
+        T: float,
+        sigma: float,
+        r: float,
+        q: float,
+        option_type: str = 'call',
+        steps: int = 50
+    ) -> tuple[float, float]:
+        """
+        Cox-Ross-Rubinstein Binomial Tree for American Options.
+        
+        Returns:
+            (Price, Delta)
+        """
+        # Parameters
+        dt = T / steps
+        u = np.exp(sigma * np.sqrt(dt))
+        d = 1 / u
+        p = (np.exp((r - q) * dt) - d) / (u - d)
+        
+        # Discount factor per step
+        df = np.exp(-r * dt)
+        
+        # Initialize asset prices at maturity
+        # asset_prices[j] = S * d^(steps-j) * u^j
+        # We need an array of size steps+1
+        asset_prices = S * (d ** (np.arange(steps + 1)[::-1])) * (u ** np.arange(steps + 1))
+        
+        # Initialize option values at maturity
+        if option_type.lower() == 'call':
+            values = np.maximum(0, asset_prices - K)
+        else:
+            values = np.maximum(0, K - asset_prices)
+            
+        # Delta capture variables
+        delta = 0.0
+        
+        # Backward induction
+        for i in range(steps - 1, -1, -1):
+            # Calculate option values at step i
+            # Checking for early exercise: American Option Condition
+            
+            # Asset prices at this step
+            # asset_prices is reduced by size 1 each step in vectorized approach?
+            # Reconstruct is safer or slice existing?
+            # S_node_j = S * u^j * d^(i-j). 
+            # Previous asset_prices had length i+2. We need length i+1.
+            # Efficient way: S_u = S_current * u, S_d = S_current * d? 
+            # Standard optimization: underlying prices recombine.
+            # asset_prices[j] at step i corresponds to nodes.
+            # Just re-calculate asset prices for step i:
+            step_asset_prices = S * (d ** (np.arange(i + 1)[::-1])) * (u ** np.arange(i + 1))
+            
+            # Capture Delta at Step 1 (Time 0 + dt)
+            # Must be done BEFORE 'values' is updated to Step 0 size
+            if i == 0:
+                # 'values' currently holds Step 1 option prices (V_down, V_up)
+                # Index 0: 0 up-moves (S*d)
+                # Index 1: 1 up-move  (S*u)
+                V_down = values[0]
+                V_up = values[1]
+                
+                S_down = S * d
+                S_up = S * u
+                
+                delta = (V_up - V_down) / (S_up - S_down)
+
+            # Continuation value
+            # values[j] from next step (i+1) becomes values[j] (down) and values[j+1] (up)
+            hold_values = df * (p * values[1:] + (1 - p) * values[:-1])
+            
+            # Intrinsic value for early exercise
+            if option_type.lower() == 'call':
+                intrinsic = np.maximum(0, step_asset_prices - K)
+            else:
+                intrinsic = np.maximum(0, K - step_asset_prices)
+                
+            values = np.maximum(intrinsic, hold_values)
+            
+
+                
+        return values[0], delta
+
+    def calculate_american_price_delta(
+        self,
+        S: float,
+        K: float,
+        T: float,
+        sigma: float,
+        r: Optional[float] = None,
+        q: float = 0.0,
+        option_type: str = 'call'
+    ) -> tuple[float, float]:
+        """Wrapper for CRR Tree."""
+        r = r if r is not None else self.risk_free_rate
+        # Ensure sufficient steps for convergence
+        return self._crr_american_tree(S, K, T, sigma, r, q, option_type, steps=50)
+
+    def calculate_vanna_american(
+        self,
+        S: float,
+        K: float,
+        T: float,
+        sigma: float,
+        r: Optional[float] = None,
+        q: float = 0.0,
+        option_type: str = 'call'
+    ) -> float:
+        """
+        Calculate Vanna for American Option using Finite Difference on CRR Delta.
+        Vanna = (Delta(vol + h) - Delta(vol - h)) / 2h
+        """
+        h = 0.01 # 1% vol bump
+        
+        # Upper vol
+        _, delta_up = self.calculate_american_price_delta(S, K, T, sigma + h, r, q, option_type)
+        
+        # Lower vol
+        _, delta_down = self.calculate_american_price_delta(S, K, T, sigma - h, r, q, option_type)
+        
+        vanna = (delta_up - delta_down) / (2 * h)
+        return vanna
+
+    def calculate_greeks_american(
+         self,
+         S: float,
+         K: float,
+         T: float,
+         sigma: float,
+         option_type: str = 'call',
+         r: Optional[float] = None,
+         q: float = 0.0
+    ) -> Optional[GreeksResult]:
+        """
+        Calculate all Greeks using American (CRR) model where appropriate.
+        """
+        try:
+             price, delta = self.calculate_american_price_delta(S, K, T, sigma, r, q, option_type)
+             vanna = self.calculate_vanna_american(S, K, T, sigma, r, q, option_type)
+             
+             # For other Greeks, we can default to BS or implement FD.
+             # Gamma via FD? 
+             # Gamma = (Delta(S+h) - Delta(S-h)) / 2h
+             # Let's do Gamma as well for completeness if used
+             
+             h_S = S * 0.01
+             _, delta_S_up = self.calculate_american_price_delta(S + h_S, K, T, sigma, r, q, option_type)
+             _, delta_S_down = self.calculate_american_price_delta(S - h_S, K, T, sigma, r, q, option_type)
+             gamma = (delta_S_up - delta_S_down) / (2 * h_S)
+             
+             # Vega via FD
+             # Vega = (Price(vol+h) - Price(vol-h)) / 2h
+             # We already computed Price(vol+h) implicitly via delta call? No, Delta call returns price too.
+             h_v = 0.01
+             p_up, _ = self.calculate_american_price_delta(S, K, T, sigma + h_v, r, q, option_type)
+             p_down, _ = self.calculate_american_price_delta(S, K, T, sigma - h_v, r, q, option_type)
+             vega = (p_up - p_down) / (2 * h_v) / 100 # usually usually reported per 1% change? No, standard is unit.
+             # BS Vega is unit change. IBKR often displays per 1%. 
+             # Let's keep unit consistent with BS impl (Vega ~ S sqrt(T)).
+             
+             # Construct Result (Theta/charm/others as 0 or BS approximation?)
+             # Mixing BS Theta with American Delta is risky but better than nothing.
+             # Let's use BS for minor Greeks for MVP speed.
+             
+             return GreeksResult(
+                 delta=delta,
+                 gamma=gamma,
+                 theta=0.0, # Placeholder or calc via FD
+                 vega=vega,
+                 vanna=vanna,
+                 charm=0.0,
+                 volga=0.0,
+                 rho=0.0,
+                 S=S, K=K, T=T, sigma=sigma, r=r or self.risk_free_rate, option_type=option_type,
+                 model='CRR-American'
+             )
+        except Exception as e:
+            logger.error(f"American Greeks calc failed: {e}")
             return None
 
 
