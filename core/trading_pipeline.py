@@ -27,6 +27,7 @@ from ai.gemini_client import get_gemini_client
 from execution.order_manager import get_order_manager
 from ibkr.data_fetcher import get_data_fetcher
 from ibkr.connection import get_ibkr_connection
+from core.database import get_database
 
 
 @dataclass
@@ -111,8 +112,84 @@ class TradingPipeline:
         try:
             self._ibkr = await get_ibkr_connection()
             self._data_fetcher = get_data_fetcher()
+            self._db = await get_database()
+            
+            # Connect to IBKR if not connected
+            if not self._ibkr.is_connected:
+                await self._ibkr.connect()
+            
+            # Reconcile state (Sync DB vs IBKR)
+            await self._reconcile_state()
+            
         except Exception as e:
-            logger.error(f"IBKR connection failed: {e}")
+            logger.error(f"IBKR/DB connection failed: {e}")
+
+    async def _reconcile_state(self):
+        """
+        Reconcile internal state with DB and IBKR.
+        Critical for crash recovery.
+        """
+        logger.info("🔄 Reconciling state (DB vs IBKR)...")
+        
+        try:
+            # 1. Get DB open trades
+            db_trades = await self._db.get_open_trades()
+            db_map = {t['symbol']: t for t in db_trades}
+            
+            # 2. Get IBKR positions
+            ib_positions = self._ibkr.get_positions()
+            ib_map = {p.contract.symbol: p for p in ib_positions if p.position != 0}
+            
+            # 3. Reconcile
+            
+            # A. In IBKR, not in DB -> Recover (Insert)
+            for symbol, pos in ib_map.items():
+                if symbol not in db_map:
+                    logger.warning(f"⚠️ Found un-tracked position in IBKR: {symbol} ({pos.position}). Recovering...")
+                    try:
+                        trade_id = await self._db.insert_trade(
+                            symbol=symbol,
+                            strategy="Recovered",
+                            entry_price=pos.avgCost,
+                            quantity=int(pos.position),
+                            notes="Recovered from IBKR reconciliation"
+                        )
+                        self._active_positions[symbol] = {
+                            'entry_price': pos.avgCost,
+                            'quantity': int(pos.position),
+                            'trade_id': trade_id,
+                            'entry_time': datetime.now(),
+                            'signal': None 
+                        }
+                    except Exception as e:
+                        logger.error(f"Failed to recover trade for {symbol}: {e}")
+            
+            # B. In DB, not in IBKR -> Close (Mark closed)
+            for symbol, trade in db_map.items():
+                if symbol not in ib_map:
+                    logger.warning(f"⚠️ Trade in DB but not in IBKR: {symbol}. Marking closed.")
+                    # Assume closed at 0 PnL if unknown
+                    await self._db.close_trade(
+                        trade_id=trade['id'],
+                        exit_price=trade['entry_price'], 
+                        pnl=0.0
+                    )
+                else:
+                    # C. Match -> Load into memory
+                    pos = ib_map[symbol]
+                    self._active_positions[symbol] = {
+                        'entry_price': trade['entry_price'],
+                        'quantity': trade['quantity'],
+                        'trade_id': trade['id'],
+                        'entry_time': trade['entry_time'] if isinstance(trade['entry_time'], datetime) else datetime.now(),
+                        'signal': None
+                    }
+                    logger.info(f"✅ Reconciled {symbol}: ID {trade['id']}")
+    
+            logger.info(f"State reconciled. {len(self._active_positions)} active positions.")
+            
+        except Exception as e:
+            logger.error(f"State reconciliation failed: {e}")
     
     # =========================================================================
     # MORNING ROUTINE
@@ -733,7 +810,7 @@ Then a brief reason on the next line.
             if signal.action == "OPEN":
                 # Default to BULL_PUT spread for now as primary strategy
                 # In real scenario, strategy comes from signal
-                await self._order_manager.place_spread_order(
+                trade = await self._order_manager.place_spread_order(
                     symbol=signal.symbol,
                     strategy="BULL_PUT",
                     action="OPEN",
@@ -741,10 +818,31 @@ Then a brief reason on the next line.
                     strikes=[],  # Would need logic to select strikes based on delta
                     expiry=None  # Default to nearest
                 )
-                self._daily_trades += 1
+                
+                if trade:
+                    self._daily_trades += 1
+                    # Persist to DB
+                    try:
+                        trade_id = await self._db.insert_trade(
+                            symbol=signal.symbol,
+                            strategy="BULL_PUT",
+                            entry_price=0.0, # Filled price updated later via execution feed
+                            quantity=1,
+                            notes=f"RL Confidence: {signal.confidence:.2f}"
+                        )
+                        # Update memory with trade_id
+                        self._active_positions[signal.symbol] = {
+                            'entry_time': datetime.now(),
+                            'signal': signal,
+                            'trade_id': trade_id,
+                            'entry_price': 0.0,
+                            'quantity': 1
+                        }
+                    except Exception as e:
+                        logger.error(f"Failed to persist trade to DB: {e}")
                 
             elif signal.action == "CLOSE":
-                await self._order_manager.place_spread_order(
+                trade = await self._order_manager.place_spread_order(
                     symbol=signal.symbol,
                     strategy="BULL_PUT",
                     action="CLOSE",
@@ -752,7 +850,24 @@ Then a brief reason on the next line.
                     strikes=[], 
                     expiry=None
                 )
-                self._active_positions.pop(signal.symbol, None)
+                
+                if trade:
+                    # Close in DB
+                    position = self._active_positions.get(signal.symbol, {})
+                    trade_id = position.get('trade_id')
+                    if trade_id:
+                        try:
+                            # We don't have PnL here yet without execution details
+                            # For V1, we mark closed. 
+                            await self._db.close_trade(
+                                trade_id=trade_id,
+                                exit_price=0.0, 
+                                pnl=0.0
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to close trade in DB: {e}")
+                            
+                    self._active_positions.pop(signal.symbol, None)
                 
             logger.info(f"✅ Trade executed: {signal.action} {signal.symbol}")
             
