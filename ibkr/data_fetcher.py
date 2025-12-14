@@ -461,16 +461,7 @@ class IBKRDataFetcher:
             return None
 
 
-# Singleton instance
-_data_fetcher: Optional[IBKRDataFetcher] = None
 
-
-def get_data_fetcher() -> IBKRDataFetcher:
-    """Get the global data fetcher instance."""
-    global _data_fetcher
-    
-    if _data_fetcher is None:
-        _data_fetcher = IBKRDataFetcher()
     
     # =========================================================================
     # Historical Data
@@ -528,4 +519,17 @@ def get_data_fetcher() -> IBKRDataFetcher:
         except Exception as e:
             logger.error(f"Error fetching history for {symbol}: {e}")
             return None
+
+
+# Singleton instance
+_data_fetcher: Optional[IBKRDataFetcher] = None
+
+
+def get_data_fetcher() -> IBKRDataFetcher:
+    """Get the global data fetcher instance."""
+    global _data_fetcher
+    
+    if _data_fetcher is None:
+        _data_fetcher = IBKRDataFetcher()
+    return _data_fetcher
 

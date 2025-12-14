@@ -109,7 +109,7 @@ class TradingPipeline:
         
         logger.info("TradingPipeline initialized")
     
-    async def _init_components(self):
+    async def _init_components(self) -> None:
         """Initialize all components."""
         self._screener = get_daily_screener()
         self._ml_predictor = get_trade_success_predictor()
@@ -140,7 +140,7 @@ class TradingPipeline:
         except Exception as e:
             logger.error(f"IBKR/DB connection failed: {e}")
 
-    async def _reconcile_state(self):
+    async def _reconcile_state(self) -> None:
         """
         Reconcile internal state with DB and IBKR.
         Critical for crash recovery.
@@ -233,7 +233,7 @@ class TradingPipeline:
         except Exception as e:
             logger.error(f"IBKR/DB connection failed: {e}")
 
-    async def start(self):
+    async def start(self) -> None:
         """
         Start the trading system.
         
@@ -387,7 +387,7 @@ class TradingPipeline:
     # RL CONTINUOUS LOOP
     # =========================================================================
     
-    async def run_rl_loop(self):
+    async def run_rl_loop(self) -> None:
         """
         Run RL agent continuously during market hours.
         
@@ -431,7 +431,7 @@ class TradingPipeline:
         
         logger.info("RL loop ended - market closed")
     
-    async def _maybe_refresh_top_10(self):
+    async def _maybe_refresh_top_10(self) -> None:
         """
         Periodically re-evaluate Top 10 and replace underperforming stocks.
         
