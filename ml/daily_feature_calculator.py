@@ -183,9 +183,10 @@ class DailyFeatureCalculator:
                     df['is_event_week'] = (df['days_to_major_event'] <= 5).astype(int)
                     df['is_event_day'] = (df['days_to_major_event'] == 0).astype(int)
                     
-                    # IV Boost (simulated): Higher close to earnings
-                    # 1.0 baseline, up to 1.5 near event
                     df['event_iv_boost'] = 1.0 + (0.5 * np.exp(-df['days_to_major_event'] / 5))
+                    
+                    # Mark event type
+                    df['major_event_type'] = 'earnings'
             
             else:
                 # If no earnings date found (e.g. ETF), check for FOMC logic override
@@ -199,6 +200,11 @@ class DailyFeatureCalculator:
                     df['days_to_major_event'] = days_array.astype(int)
                     df['is_event_week'] = 0 # ETFs less binary than stocks
                     df['event_iv_boost'] = 1.0 # Less vol crush for ETFs
+                    
+                    # Mark event type
+                    df['major_event_type'] = 'macro'
+                else:
+                    df['major_event_type'] = 'none'
         
         n_after = len(df.columns)
         logger.info(f"  {symbol}: Added {n_after - n_before} daily features ({n_after} total)")
