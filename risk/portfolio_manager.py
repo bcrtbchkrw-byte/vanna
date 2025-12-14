@@ -48,30 +48,62 @@ class PortfolioManager:
             return self.beta_cache[symbol]
             
         try:
-            # We need daily closes for symbol and SPY
-            # Using data_fetcher to get history
-            # Note: In production, this should likely query the DB or specialized data service
-            # For now, we assume data_fetcher can get some history or we warn and use beta=1
+            # Check cache with simplistic expiration (e.g. check if calculated today?)
+            # For now, just simplistic check
             
-            # Placeholder: In a real system, we'd fetch 90d daily bars here.
-            # Currently fetch_historical_intraday is available in pipeline, 
-            # but data_fetcher might be limited to live quotes or snapshots in current impl.
+            # Fetch Daily History for Symbol and SPY
+            # We use 6 months of daily bars for Beta
+            logger.debug(f"Calculate Beta for {symbol}...")
             
-            # Fallback to Beta = 1 for stable assets if data missing, or 1.2 for tech
-            # For MVP, let's try to infer from VIX or volatility relative to market if possible,
-            # but simple hardcoded check or simple calculation is better.
+            df_sym = await self.data_fetcher.get_historical_data(symbol, duration='6 M', bar_size='1 day')
             
-            # Let's assume Beta = 1.0 for now if we can't calc, but log warning.
-            # Real implementation would calculate Cov(Rm, Ri) / Var(Rm)
+            if self.spy_history is None:
+                 self.spy_history = await self.data_fetcher.get_historical_data('SPY', duration='6 M', bar_size='1 day')
+                 
+            if df_sym is None or self.spy_history is None:
+                logger.warning(f"Could not fetch history for Beta calc ({symbol}). Using default.")
+                # Fallback logic
+                beta = 1.0
+                if symbol in ['NVDA', 'AMD', 'TSLA', 'COIN', 'NDX', 'QQQ']:
+                    beta = 1.5
+                elif symbol in ['GLD', 'TLT', 'XLP']:
+                    beta = 0.5
+                self.beta_cache[symbol] = beta
+                return beta
             
-            beta = 1.0
-            if symbol in ['NVDA', 'AMD', 'TSLA', 'COIN']:
-                beta = 1.5
-            elif symbol in ['GLD', 'TLT']:
-                beta = 0.5
+            # Calculate Daily Returns
+            # We align indices
+            # df_sym['close'] vs self.spy_history['close']
+            
+            # Ensure indices are dates
+            # (Already handled in get_historical_data)
+            
+            # Inner join on index
+            df = pd.DataFrame({
+                'sym': df_sym['close'],
+                'spy': self.spy_history['close']
+            }).dropna()
+            
+            if len(df) < 20: # Need at least a month or so
+                 logger.warning(f"Insufficient overlap for Beta calc {symbol}")
+                 return 1.0
+                 
+            # Percentage Changes
+            returns = df.pct_change().dropna()
+            
+            # Covariance Matrix
+            # [[Var(sym), Cov(sym,spy)], [Cov(spy,sym), Var(spy)]]
+            cov_matrix = np.cov(returns['sym'], returns['spy'])
+            
+            cov_sym_spy = cov_matrix[0][1]
+            var_spy = cov_matrix[1][1]
+            
+            beta = cov_sym_spy / var_spy
+            
+            logger.info(f"Computed Beta for {symbol}: {beta:.2f} (based on {len(returns)} days)")
             
             self.beta_cache[symbol] = beta
-            return beta
+            return float(beta)
             
         except Exception as e:
             logger.error(f"Error calculating beta for {symbol}: {e}")

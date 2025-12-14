@@ -14,6 +14,8 @@ from core.logger import get_logger
 from core.exceptions import DataError, IBKRDisconnectedError
 from ibkr.connection import get_ibkr_connection
 
+import pandas as pd
+
 logger = get_logger()
 
 
@@ -470,5 +472,60 @@ def get_data_fetcher() -> IBKRDataFetcher:
     if _data_fetcher is None:
         _data_fetcher = IBKRDataFetcher()
     
-    return _data_fetcher
+    # =========================================================================
+    # Historical Data
+    # =========================================================================
+
+    async def get_historical_data(
+        self, 
+        symbol: str, 
+        duration: str = '6 M', 
+        bar_size: str = '1 day'
+    ) -> Optional[pd.DataFrame]:
+        """
+        Fetch historical data for a symbol.
+        
+        Args:
+            symbol: Stock symbol
+            duration: Duration to fetch (e.g. '6 M', '1 Y')
+            bar_size: Bar size (e.g. '1 day', '1 hour')
+            
+        Returns:
+            DataFrame with Index=Date, Columns=[open, high, low, close, volume]
+        """
+        conn = await self._get_connection()
+        if not conn.is_connected:
+            logger.error("Not connected to IBKR")
+            return None
+            
+        try:
+            # Create contract
+            contract = Stock(symbol, 'SMART', 'USD')
+            await conn.ib.qualifyContractsAsync(contract)
+            
+            # Request historical data
+            bars = await conn.ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime='',
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow='TRADES',
+                useRTH=True,
+                formatDate=1
+            )
+            
+            if not bars:
+                logger.warning(f"No historical data for {symbol}")
+                return None
+                
+            # Convert to DataFrame
+            df = pd.DataFrame(bars)
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            
+            return df[['open', 'high', 'low', 'close', 'volume']]
+            
+        except Exception as e:
+            logger.error(f"Error fetching history for {symbol}: {e}")
+            return None
 
