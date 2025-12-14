@@ -80,9 +80,13 @@ class DailyFeatureInjector:
         df_min = pd.read_parquet(min_path)
         
         # Prepare daily data
-        # 1. Extract date from timestamp
+        # 1. Extract date from timestamp (strip timezone to avoid tz-aware vs tz-naive issues)
         if 'timestamp' in df_daily.columns:
-            df_daily['trade_date'] = pd.to_datetime(df_daily['timestamp']).dt.date
+            ts = pd.to_datetime(df_daily['timestamp'])
+            # Strip timezone if present
+            if ts.dt.tz is not None:
+                ts = ts.dt.tz_localize(None)
+            df_daily['trade_date'] = ts.dt.date
         else:
             # Assume index is date
             df_daily['trade_date'] = pd.to_datetime(df_daily.index).date
@@ -110,11 +114,17 @@ class DailyFeatureInjector:
         rename_map = {f: f'day_{f}' for f in available_features}
         df_inject = df_inject.rename(columns=rename_map)
         
-        # 4. Extract trade_date from 1-min data
+        # 4. Extract trade_date from 1-min data (strip timezone)
         if 'timestamp' in df_min.columns:
-            df_min['trade_date'] = pd.to_datetime(df_min['timestamp']).dt.date
+            ts_min = pd.to_datetime(df_min['timestamp'])
+            if ts_min.dt.tz is not None:
+                ts_min = ts_min.dt.tz_localize(None)
+            df_min['trade_date'] = ts_min.dt.date
         elif 'datetime' in df_min.columns:
-            df_min['trade_date'] = pd.to_datetime(df_min['datetime']).dt.date
+            ts_min = pd.to_datetime(df_min['datetime'])
+            if ts_min.dt.tz is not None:
+                ts_min = ts_min.dt.tz_localize(None)
+            df_min['trade_date'] = ts_min.dt.date
         else:
             logger.error(f"No timestamp column in 1-min data for {symbol}")
             return None
