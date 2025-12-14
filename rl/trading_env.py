@@ -28,7 +28,7 @@ class TradingEnvironment(gym.Env):
     
     metadata = {"render_modes": ["human", "ansi"]}
     
-    # Market features from normalized *_rl.parquet (46 total)
+    # Market features from normalized *_rl.parquet (63 total)
     # NO OHLC, NO timestamp - all normalized/scaled
     MARKET_FEATURES = [
         # Time (6) - already normalized [-1, 1]
@@ -53,8 +53,18 @@ class TradingEnvironment(gym.Env):
         # Binary signals (5) - 0/1
         'signal_high_prob', 'signal_low_vol', 'signal_crisis',
         'signal_contango', 'signal_backwardation',
-        # Earnings features (4) - options behave differently near earnings!
+        # Earnings features (4)
         'days_to_earnings', 'is_earnings_week', 'is_earnings_month', 'earnings_iv_multiplier',
+        # Daily features injected from 1day (17) - uses YESTERDAY's data (no lookahead!)
+        'day_sma_200', 'day_sma_50', 'day_sma_20',
+        'day_price_vs_sma200', 'day_price_vs_sma50',
+        'day_rsi_14',
+        'day_atr_14', 'day_atr_pct',
+        'day_bb_position',
+        'day_macd', 'day_macd_hist',
+        'day_above_sma200', 'day_above_sma50',
+        'day_sma_50_200_ratio',
+        'day_days_to_earnings', 'day_is_earnings_week', 'day_earnings_iv_boost',
     ]
     
     # Position features added at runtime (7)
@@ -63,9 +73,9 @@ class TradingEnvironment(gym.Env):
         'trade_count', 'bid_ask_spread', 'market_open'
     ]
     
-    N_MARKET_FEATURES = 46  # Updated: 42 + 4 earnings
+    N_MARKET_FEATURES = 63  # Updated: 46 + 17 daily
     N_POSITION_FEATURES = 7
-    N_FEATURES = 53  # 46 market + 7 position
+    N_FEATURES = 70  # 63 market + 7 position
     
     def __init__(
         self,

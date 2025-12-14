@@ -64,6 +64,15 @@ class SaturdayTrainingPipeline:
             # Step 2: Calculate Greeks
             await self._step_calculate_greeks()
             
+            # Step 2b: Calculate daily features (NEW)
+            await self._step_calculate_daily_features()
+            
+            # Step 2c: Add earnings data (NEW)
+            await self._step_add_earnings_data()
+            
+            # Step 2d: Inject daily features into 1min (NEW)
+            await self._step_inject_daily_features()
+            
             # Step 3: Train ML models
             await self._step_train_ml_models()
             
@@ -128,6 +137,67 @@ class SaturdayTrainingPipeline:
         
         self.results['greeks'] = symbols_processed
         logger.info(f"✅ Greeks calculated for {len(symbols_processed)} symbols")
+    
+    async def _step_calculate_daily_features(self):
+        """Step 2b: Calculate daily technical indicators (SMA200, RSI, etc.)."""
+        logger.info("\n" + "=" * 50)
+        logger.info("📊 STEP 2b: Calculate Daily Features")
+        logger.info("=" * 50)
+        
+        try:
+            from ml.daily_feature_calculator import get_daily_feature_calculator
+            
+            calculator = get_daily_feature_calculator()
+            results = calculator.calculate_all()
+            
+            self.results['daily_features'] = results
+            success = sum(results.values())
+            logger.info(f"✅ Daily features calculated for {success}/{len(results)} symbols")
+            
+        except Exception as e:
+            logger.error(f"❌ Daily features failed: {e}")
+            self.results['daily_features'] = {'error': str(e)}
+    
+    async def _step_add_earnings_data(self):
+        """Step 2c: Add earnings dates to daily data."""
+        logger.info("\n" + "=" * 50)
+        logger.info("📅 STEP 2c: Add Earnings Data")
+        logger.info("=" * 50)
+        
+        try:
+            from ml.earnings_data_fetcher import get_earnings_data_fetcher
+            
+            fetcher = get_earnings_data_fetcher()
+            results = fetcher.calculate_all()
+            
+            self.results['earnings'] = results
+            success = sum(results.values())
+            logger.info(f"✅ Earnings data added for {success}/{len(results)} symbols")
+            
+        except Exception as e:
+            logger.error(f"❌ Earnings data failed: {e}")
+            self.results['earnings'] = {'error': str(e)}
+    
+    async def _step_inject_daily_features(self):
+        """Step 2d: Inject daily features into 1min data (NO LOOK-AHEAD!)."""
+        logger.info("\n" + "=" * 50)
+        logger.info("💉 STEP 2d: Inject Daily Features into 1-min Data")
+        logger.info("   ⚠️ Using yesterday's data to prevent look-ahead bias")
+        logger.info("=" * 50)
+        
+        try:
+            from ml.daily_feature_injector import get_daily_feature_injector
+            
+            injector = get_daily_feature_injector()
+            results = injector.inject_all(target_suffix="1min_vanna")
+            
+            self.results['daily_injection'] = results
+            success = sum(results.values())
+            logger.info(f"✅ Daily features injected for {success}/{len(results)} symbols")
+            
+        except Exception as e:
+            logger.error(f"❌ Daily injection failed: {e}")
+            self.results['daily_injection'] = {'error': str(e)}
     
     async def _step_train_ml_models(self):
         """Step 3: Train ML models."""
