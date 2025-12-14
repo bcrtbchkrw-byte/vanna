@@ -17,7 +17,7 @@ import asyncio
 
 from loguru import logger
 
-from analysis.earnings_checker import get_earnings_checker
+from ml.yahoo_earnings import get_yahoo_earnings_fetcher
 from analysis.liquidity import get_liquidity_checker
 from analysis.vix_monitor import get_vix_monitor
 from ibkr.data_fetcher import get_data_fetcher
@@ -145,7 +145,7 @@ class DailyOptionsScreener:
     def __init__(self, top_n: int = 50):
         self.top_n = top_n
         self.vix_monitor = get_vix_monitor()
-        self.earnings_checker = get_earnings_checker()
+        self.earnings_fetcher = get_yahoo_earnings_fetcher()
         self.liquidity_checker = get_liquidity_checker()
         self.data_fetcher = None  # Lazy init
         
@@ -254,9 +254,9 @@ class DailyOptionsScreener:
         - Quote for spread estimation
         """
         try:
-            # 1. Check earnings blackout
-            earnings = await self.earnings_checker.check_blackout(symbol)
-            if earnings['in_blackout']:
+            # 1. Check earnings blackout (using Yahoo Finance - free!)
+            days_to_earnings = self.earnings_fetcher.get_days_to_earnings(symbol)
+            if days_to_earnings <= 7:  # Blackout window
                 return StockScore(
                     symbol=symbol,
                     score=0,
@@ -265,7 +265,7 @@ class DailyOptionsScreener:
                     avg_spread_pct=100,
                     passed_earnings=False,
                     passed_liquidity=False,
-                    reason=f"Earnings: {earnings['reason']}"
+                    reason=f"Earnings in {days_to_earnings} days"
                 )
             
             # 2. Get stock quote for spread

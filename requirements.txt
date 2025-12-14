@@ -46,3 +46,6 @@ stable-baselines3
 streamlit
 
 plotly
+
+# Yahoo Finance (earnings data - free, no API key!)
+yfinance
