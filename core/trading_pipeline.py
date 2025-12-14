@@ -109,7 +109,7 @@ class TradingPipeline:
         
         try:
             self._ibkr = await get_ibkr_connection()
-            self._data_fetcher = await get_data_fetcher()
+            self._data_fetcher = get_data_fetcher()
         except Exception as e:
             logger.error(f"IBKR connection failed: {e}")
     

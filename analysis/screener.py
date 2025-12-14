@@ -159,7 +159,7 @@ class DailyOptionsScreener:
     async def _get_data_fetcher(self):
         """Lazy init data fetcher."""
         if self.data_fetcher is None:
-            self.data_fetcher = await get_data_fetcher()
+            self.data_fetcher = get_data_fetcher()
         return self.data_fetcher
     
     def get_today_watchlist(self) -> List[str]:
