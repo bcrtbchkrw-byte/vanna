@@ -222,9 +222,15 @@ class FeatureEnricher:
         # ================================================================
         # 5. Clip outliers (prevent extreme values)
         # ================================================================
+        # ================================================================
+        # 5. Clip outliers (prevent extreme values)
+        # ================================================================
         numeric_cols = df.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
-            df[col] = df[col].clip(-10, 10)
+            # CRITICAL FIX: Don't clip blindly to -10/10. 
+            # Prices can be 400+, RSI is 0-100.
+            # We only clip to avoid Infinity or massive outliers.
+            df[col] = df[col].clip(-10000, 10000)
         
         # ================================================================
         # 6. Fill any remaining NaN

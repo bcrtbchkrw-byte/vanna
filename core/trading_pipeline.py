@@ -391,87 +391,86 @@ class TradingPipeline:
     
     async def _calculate_technical_features(self, symbol: str, current_price: float) -> Dict[str, float]:
         """
-        Calculate daily technical features (SMA, RSI, MACD, etc.) from historical data.
-        Returns a dict matching the 'Daily features' section of TradingEnv.
+        Calculate daily technical features using Single Source of Truth (DailyFeatureCalculator).
+        Ensures consistency with RL training data.
         """
         defaults = {
             'day_sma_200': 1.0, 'day_sma_50': 1.0, 'day_sma_20': 1.0,
             'day_price_vs_sma200': 0.0, 'day_price_vs_sma50': 0.0,
-            'day_rsi_14': 50.0, 'day_atr_14': 0.02, 'day_atr_pct': 0.02,
+            'day_rsi_14': 0.5, 'day_atr_14': 0.02, 'day_atr_pct': 0.02,
             'day_bb_position': 0.5, 'day_macd': 0.0, 'day_macd_hist': 0.0,
             'day_above_sma200': 1, 'day_above_sma50': 1, 'day_sma_50_200_ratio': 1.0
         }
         
         try:
             from ml.vanna_data_pipeline import get_vanna_pipeline
+            from ml.daily_feature_calculator import get_daily_feature_calculator
             import pandas as pd
             import numpy as np
             
             pipeline = get_vanna_pipeline()
+            # Fetch enough history for 200 SMA + some buffer
             df = pipeline.get_training_data([symbol], timeframe='1day')
             
-            if df is None or len(df) < 50:
+            if df is None or len(df) < 200:
+                logger.warning(f"Insufficient history for {symbol} technicals")
                 return defaults
                 
-            df = df.sort_values('timestamp')
-            close = df['close']
-            high = df['high']
-            low = df['low']
+            # Use centralized calculator
+            calc = get_daily_feature_calculator()
+            df = calc.add_technical_features(df)
             
-            # 1. SMAs
-            sma_20 = close.rolling(20).mean().iloc[-1]
-            sma_50 = close.rolling(50).mean().iloc[-1]
-            sma_200 = close.rolling(200).mean().iloc[-1] if len(df) >= 200 else sma_50 * 0.95
+            # Extract latest values
+            last = df.iloc[-1]
             
-            # 2. RSI 14
-            delta = close.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            rs = gain / loss.replace(0, 1e-9)
-            rsi = 100 - (100 / (1 + rs)).iloc[-1]
+            # Normalize for RL Agent (0-1 scale, ratios)
+            # CRITICAL: Currently DailyFeatureCalculator returns RAW values (RSI 0-100, SMA prices)
+            # We must apply the SAME transforms here as FeatureEnricher/Injector do for training data.
+            # OR, if we move normalization to Calculator, use that.
+            # Currently Calculator returns standard technicals.
             
-            # 3. ATR 14
-            tr = pd.concat([
-                high - low,
-                (high - close.shift(1)).abs(),
-                (low - close.shift(1)).abs()
-            ], axis=1).max(axis=1)
-            atr = tr.rolling(14).mean().iloc[-1]
+            close = last['close']
             
-            # 4. Bollinger Bands (20, 2)
-            std_20 = close.rolling(20).std().iloc[-1]
-            upper = sma_20 + (2 * std_20)
-            lower = sma_20 - (2 * std_20)
-            bb_pos = (current_price - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
-            
-            # 5. MACD (12, 26, 9)
-            ema_12 = close.ewm(span=12, adjust=False).mean()
-            ema_26 = close.ewm(span=26, adjust=False).mean()
-            macd_line = ema_12 - ema_26
-            signal_line = macd_line.ewm(span=9, adjust=False).mean()
-            macd_val = macd_line.iloc[-1]
-            macd_hist = (macd_line - signal_line).iloc[-1]
-            
-            # Normalize
-            return {
-                'day_sma_200': float(sma_200 / current_price), # Normalize to ratio
-                'day_sma_50': float(sma_50 / current_price),
-                'day_sma_20': float(sma_20 / current_price),
-                'day_price_vs_sma200': float((current_price / sma_200) - 1),
-                'day_price_vs_sma50': float((current_price / sma_50) - 1),
-                'day_rsi_14': float(rsi / 100.0), # Normalize 0-1
-                'day_atr_14': float(atr),
-                'day_atr_pct': float(atr / current_price),
-                'day_bb_position': float(bb_pos),
-                'day_macd': float(macd_val / current_price), # Normalize by price
-                'day_macd_hist': float(macd_hist / current_price),
-                'day_above_sma200': 1 if current_price > sma_200 else 0,
-                'day_above_sma50': 1 if current_price > sma_50 else 0,
-                'day_sma_50_200_ratio': float(sma_50 / sma_200),
+            features = {
+                # SMA: Raw values normalized by price for Gym observation consistency
+                # (Assuming RL environment receives price-relative values for generalization)
+                'day_sma_200': float(last['sma_200'] / close),
+                'day_sma_50': float(last['sma_50'] / close),
+                'day_sma_20': float(last['sma_20'] / close),
+                
+                # Ratios (already computed)
+                'day_price_vs_sma200': float(last['price_vs_sma200']), # close/sma - 1? No, calc is close/sma
+                # Wait, calculator logic: df['price_vs_sma200'] = df['close'] / df['sma_200'] (Ratio ~1.0)
+                # Pipeline previously returned: (current_price / sma_200) - 1 (Diff from 1.0)
+                # Let's align with what TradingEnv expects.
+                # TradingEnv Market Features are normalized by VecNormalize, so raw ratio ~1.0 is fine.
+                'day_price_vs_sma200': float(last['price_vs_sma200'] - 1.0), # Centered around 0
+                'day_price_vs_sma50': float(last['price_vs_sma50'] - 1.0),
+                
+                # RSI: Calculator 0-100 -> RL 0-1
+                'day_rsi_14': float(last['rsi_14'] / 100.0),
+                
+                # ATR
+                'day_atr_14': float(last['atr_14']),
+                'day_atr_pct': float(last['atr_pct']),
+                
+                # BB Position (0-1) - already calculated
+                'day_bb_position': float(last['bb_position']),
+                
+                # MACD: Normalize by price to make it relative
+                'day_macd': float(last['macd'] / close),
+                'day_macd_hist': float(last['macd_hist'] / close),
+                
+                # Trend
+                'day_above_sma200': int(last['above_sma200']),
+                'day_above_sma50': int(last['above_sma50']),
+                'day_sma_50_200_ratio': float(last['sma_50_200_ratio']),
             }
             
+            return features
+            
         except Exception as e:
-            logger.warning(f"Error calculating technical features: {e}")
+            logger.warning(f"Error calculating technical features for {symbol}: {e}")
             return defaults
 
     async def _get_live_features(self, symbol: str) -> Optional[Dict[str, float]]:

@@ -29,6 +29,7 @@ class DailyFeatureCalculator:
     - price_vs_sma200 (ratio)
     """
     
+    def __init__(self, data_dir: str = "data/vanna_ml"):
         self.data_dir = Path(data_dir)
         
         # Initialize earnings fetcher
@@ -73,214 +74,160 @@ class DailyFeatureCalculator:
         
         n_before = len(df.columns)
         
-        # ================================================================
+    @staticmethod
+    def add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate technical features (SMA, RSI, MACD, etc.).
+        Single Source of Truth for both Training and Live Trading.
+        
+        Args:
+            df: DataFrame with 'close', 'high', 'low'
+            
+        Returns:
+            DataFrame with added technical columns
+        """
+        df = df.copy()
+        
+        # Ensure sufficient history for calculation
+        if len(df) < 50:
+            return df
+            
         # 1. Moving Averages
-        # ================================================================
         df['sma_200'] = df['close'].rolling(window=200, min_periods=50).mean()
         df['sma_50'] = df['close'].rolling(window=50, min_periods=20).mean()
         df['sma_20'] = df['close'].rolling(window=20, min_periods=10).mean()
         
-        # Price vs SMA ratios (useful for trend detection)
+        # Price vs SMA ratios
         df['price_vs_sma200'] = df['close'] / df['sma_200']
         df['price_vs_sma50'] = df['close'] / df['sma_50']
+        df['sma_50_200_ratio'] = df['sma_50'] / df['sma_200']
         
-        # ================================================================
-        # 2. RSI (Relative Strength Index)
-        # ================================================================
-        df['rsi_14'] = self._calculate_rsi(df['close'], period=14)
+        # 2. RSI (EMA-based, standard)
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).ewm(span=14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(span=14, adjust=False).mean()
+        rs = gain / loss.replace(0, 1e-9)
+        df['rsi_14'] = 100 - (100 / (1 + rs))
+        df['rsi_14'] = df['rsi_14'].fillna(50)
         
-        # ================================================================
-        # 3. ATR (Average True Range)
-        # ================================================================
+        # 3. ATR
         if 'high' in df.columns and 'low' in df.columns:
-            df['atr_14'] = self._calculate_atr(df, period=14)
-            df['atr_pct'] = df['atr_14'] / df['close']  # ATR as % of price
+            tr1 = df['high'] - df['low']
+            tr2 = (df['high'] - df['close'].shift(1)).abs()
+            tr3 = (df['low'] - df['close'].shift(1)).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            df['atr_14'] = tr.rolling(window=14).mean()
+            df['atr_pct'] = df['atr_14'] / df['close']
         
-        # ================================================================
         # 4. Bollinger Bands
-        # ================================================================
         df['bb_middle'] = df['sma_20']
         df['bb_std'] = df['close'].rolling(window=20, min_periods=10).std()
         df['bb_upper'] = df['bb_middle'] + (df['bb_std'] * 2)
         df['bb_lower'] = df['bb_middle'] - (df['bb_std'] * 2)
         
-        # BB position: 0 = at lower, 1 = at upper
-        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+        # BB position
+        diff = df['bb_upper'] - df['bb_lower']
+        # Avoid division by zero
+        diff = diff.replace(0, 1e-9) 
+        df['bb_position'] = (df['close'] - df['bb_lower']) / diff
         df['bb_position'] = df['bb_position'].clip(0, 1)
         
-        # ================================================================
         # 5. MACD
-        # ================================================================
         ema_12 = df['close'].ewm(span=12, adjust=False).mean()
         ema_26 = df['close'].ewm(span=26, adjust=False).mean()
         df['macd'] = ema_12 - ema_26
         df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
         df['macd_hist'] = df['macd'] - df['macd_signal']
         
-        # ================================================================
-        # 6. Trend indicators
-        # ================================================================
-        # Above/below key SMAs (binary)
+        # 6. Trend binaries
         df['above_sma200'] = (df['close'] > df['sma_200']).astype(int)
         df['above_sma50'] = (df['close'] > df['sma_50']).astype(int)
         
-        # Golden/Death cross signals
-        # Golden/Death cross signals
-        df['sma_50_200_ratio'] = df['sma_50'] / df['sma_200']
+        return df
+
+    def calculate_for_symbol(self, symbol: str) -> Optional[pd.DataFrame]:
+        # ... (implementation using add_technical_features)
+        filepath = self.data_dir / f"{symbol}_1day.parquet"
+        if not filepath.exists():
+            return None
+            
+        logger.info(f"Calculating daily features for {symbol}...")
+        df = pd.read_parquet(filepath)
         
-        # ================================================================
-        # 7. Earnings / Major Events
-        # ================================================================
+        if 'close' not in df.columns:
+            return None
+            
+        if 'timestamp' in df.columns:
+            df = df.sort_values('timestamp').reset_index(drop=True)
+            
+        n_before = len(df.columns)
+        
+        # Use centralized calculation
+        df = self.add_technical_features(df)
+        
+        # 7. Earnings / Major Events calculation (keeps existing logic)
+        # ... (rest of earnings logic)
+        # This part requires 'self' so it stays here or we pass fetcher to static method
+        # Keeping it here for now as it relies on self.earnings_fetcher
+        
         # Default values
-        df['days_to_major_event'] = 45
-        df['is_event_week'] = 0
-        df['is_event_day'] = 0
-        df['event_iv_boost'] = 1.0
+        if 'days_to_major_event' not in df.columns:
+             df['days_to_major_event'] = 45
+             df['is_event_week'] = 0
+             df['is_event_day'] = 0
+             df['event_iv_boost'] = 1.0
+             df['major_event_type'] = 'none' # Default
         
         if self.earnings_fetcher:
-            # Get next earnings date (REAL)
+            # ... (Earnings logic from previous step, preserved)
             next_earnings = self.earnings_fetcher.get_next_earnings(symbol)
-            
             if next_earnings:
-                # Calculate for latest data point (most important for live trading)
-                last_date = df['trade_date'].iloc[-1] if 'trade_date' in df.columns else None
-                # If no trade_date col, try to derive from index or timestamp
-                if last_date is None and 'timestamp' in df.columns:
-                     last_date = df['timestamp'].iloc[-1].date()
-
+                last_date = None
+                if 'trade_date' in df.columns:
+                    last_date = df['trade_date'].iloc[-1]
+                elif 'timestamp' in df.columns:
+                    last_date = df['timestamp'].iloc[-1].date()
+                
                 if last_date:
                     days = (next_earnings - last_date).days
-                    # Update last row features
                     df.loc[df.index[-1], 'days_to_major_event'] = max(0, days)
                     df.loc[df.index[-1], 'is_event_week'] = 1 if 0 <= days <= 7 else 0
                     df.loc[df.index[-1], 'is_event_day'] = 1 if days == 0 else 0
+                    df.loc[df.index[-1], 'major_event_type'] = 'earnings' # Set type
                     
-                    # Simple decay for historical backfill (approximate previous quarters)
-                    # We assume earnings every ~90 days
-                    # This creates a sawtooth pattern 90 -> 0 -> 90 -> 0 which is good enough for RL training on history
-                    # to learn "cycles", even if dates aren't perfect historically.
-                    
-                    # Vectorized sawtooth wave for history
+                    # Backfill simulation logic
                     n = len(df)
-                    # Create a decaying sawtooth from 90 down to 0
-                    # Offset so the last value matches the 'real' days to earnings
                     offset = (days % 90)
-                    # Create sequence: ... 90, 89, ..., 0, 90, 89 ...
-                    # We use negative index to look back from the known future date
                     idx = np.arange(n)
-                    # Cycle is approx 63 trading days (quarter)
-                    cycle_len = 63 
-                    
-                    # Pattern: Days decreases by 1 each day until event, then resets
-                    # We reconstruct past "days to earnings" by projecting backwards
-                    
-                    # Linear projection: days_historical = (days_real + (n - 1 - i)) % 90
-                    # But accurate "days" should be trading days approx.
-                    
-                    days_array = (days + (n - 1 - idx)) % 91 # Modulo 91 to wrap 90->0
-                    
+                    days_array = (days + (n - 1 - idx)) % 91
                     df['days_to_major_event'] = days_array.astype(int)
                     df['is_event_week'] = (df['days_to_major_event'] <= 5).astype(int)
                     df['is_event_day'] = (df['days_to_major_event'] == 0).astype(int)
-                    
                     df['event_iv_boost'] = 1.0 + (0.5 * np.exp(-df['days_to_major_event'] / 5))
-                    
-                    # Mark event type
-                    df['major_event_type'] = 'earnings'
-            
+                    df['major_event_type'] = 'earnings' # Backfill type
             else:
-                # If no earnings date found (e.g. ETF), check for FOMC logic override
-                if symbol in ['SPY', 'QQQ', 'IWM', 'TLT', 'GLD']:
-                    # ETFs don't have earnings, they have FOMC/CPI
-                    # We simulate a monthly cycle (CPI) + 6-week cycle (FOMC) mix
-                    # Just a 30-day cycle for "Macro Event"
+                 if symbol in ['SPY', 'QQQ', 'IWM', 'TLT', 'GLD']:
                     n = len(df)
                     idx = np.arange(n)
-                    days_array = idx % 22 # 22 trading days ~ 1 month
+                    days_array = idx % 22
                     df['days_to_major_event'] = days_array.astype(int)
-                    df['is_event_week'] = 0 # ETFs less binary than stocks
-                    df['event_iv_boost'] = 1.0 # Less vol crush for ETFs
-                    
-                    # Mark event type
+                    df['is_event_week'] = 0
+                    df['event_iv_boost'] = 1.0
                     df['major_event_type'] = 'macro'
-                else:
-                    df['major_event_type'] = 'none'
         
         n_after = len(df.columns)
         logger.info(f"  {symbol}: Added {n_after - n_before} daily features ({n_after} total)")
         
-        # Save updated parquet
         df.to_parquet(filepath, index=False)
-        logger.info(f"  ✅ Saved to {filepath}")
-        
         return df
+        
+    def _calculate_rsi(self, prices, period=14):
+        # Deprecated, used add_technical_features
+        pass
     
-    def calculate_all(self, symbols: Optional[List[str]] = None) -> dict:
-        """
-        Calculate daily features for all symbols.
-        
-        Args:
-            symbols: List of symbols or None for auto-detect
-            
-        Returns:
-            Dict of results per symbol
-        """
-        if symbols is None:
-            # Auto-detect from files
-            symbols = [
-                f.stem.replace('_1day', '')
-                for f in self.data_dir.glob('*_1day.parquet')
-            ]
-        
-        logger.info(f"Calculating daily features for {len(symbols)} symbols...")
-        
-        results = {}
-        for symbol in symbols:
-            try:
-                df = self.calculate_for_symbol(symbol)
-                results[symbol] = df is not None
-            except Exception as e:
-                logger.error(f"Error calculating {symbol}: {e}")
-                results[symbol] = False
-        
-        success = sum(results.values())
-        logger.info(f"✅ Daily features calculated: {success}/{len(symbols)} symbols")
-        
-        return results
-    
-    def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
-        """Calculate RSI indicator."""
-        delta = prices.diff()
-        
-        gain = delta.where(delta > 0, 0)
-        loss = (-delta).where(delta < 0, 0)
-        
-        avg_gain = gain.rolling(window=period, min_periods=period).mean()
-        avg_loss = loss.rolling(window=period, min_periods=period).mean()
-        
-        # Use EMA for smoother RSI
-        avg_gain = gain.ewm(span=period, adjust=False).mean()
-        avg_loss = loss.ewm(span=period, adjust=False).mean()
-        
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        rsi = 100 - (100 / (1 + rs))
-        
-        return rsi.fillna(50)  # Neutral RSI for missing
-    
-    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
-        """Calculate Average True Range."""
-        high = df['high']
-        low = df['low']
-        close = df['close']
-        
-        tr1 = high - low
-        tr2 = abs(high - close.shift(1))
-        tr3 = abs(low - close.shift(1))
-        
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(window=period, min_periods=1).mean()
-        
-        return atr
+    def _calculate_atr(self, df, period=14):
+        # Deprecated
+        pass
 
 
 # Singleton
