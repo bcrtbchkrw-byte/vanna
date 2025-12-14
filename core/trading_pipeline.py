@@ -29,6 +29,7 @@ from ibkr.data_fetcher import get_data_fetcher
 from ibkr.connection import get_ibkr_connection
 from core.database import get_database
 from core.scheduler import get_scheduler
+from risk.portfolio_manager import get_portfolio_manager
 
 
 @dataclass
@@ -102,6 +103,7 @@ class TradingPipeline:
         self._regime_classifier = get_regime_classifier()
         self._gemini = get_gemini_client()
         self._order_manager = get_order_manager()
+        self._portfolio_manager = get_portfolio_manager()
         
         try:
             self._rl_agent = get_trading_agent()
@@ -855,9 +857,28 @@ Then a brief reason on the next line.
                 self._active_positions.pop(signal.symbol, None)
             return
         
-            # Real trading
+            # Real trading logic
         try:
             logger.info(f"🚀 EXECUTING: {signal.action} {signal.symbol}")
+            
+            # Portfolio Risk Check
+            if signal.action == "OPEN":
+                # Get current positions and net liq from IBKR
+                positions = self._ibkr.get_positions()
+                summary = await self._ibkr.get_account_summary()
+                net_liq = float(summary.get('NetLiquidation', 100000))
+                
+                risk_check = await self._portfolio_manager.check_trade(
+                    signal=signal, 
+                    current_positions=positions, 
+                    net_liq=net_liq
+                )
+                
+                if not risk_check['allowed']:
+                    logger.warning(f"❌ Portfolio Risk Reject: {risk_check['reason']}")
+                    # Update decision to failed
+                    decision.executed = False
+                    return
             
             if signal.action == "OPEN":
                 # Default to BULL_PUT spread for now as primary strategy

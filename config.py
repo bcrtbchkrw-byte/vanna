@@ -54,6 +54,13 @@ class LiquidityConfig:
 
 
 @dataclass
+class PortfolioConfig:
+    """Portfolio risk settings."""
+    max_beta_weighted_delta: float  # Max SPY-equivalent delta
+    max_portfolio_leverage: float   # Max gross notional / NetLiq
+
+
+@dataclass
 class LogConfig:
     """Logging settings."""
     level: str
@@ -115,6 +122,11 @@ class Config:
         self.liquidity = LiquidityConfig(
             max_bid_ask_spread=float(os.getenv('MAX_BID_ASK_SPREAD', '0.50')),
             min_volume_oi_ratio=float(os.getenv('MIN_VOLUME_OI_RATIO', '1.0')),
+        )
+        
+        self.portfolio = PortfolioConfig(
+            max_beta_weighted_delta=float(os.getenv('MAX_PORTFOLIO_DELTA', '50.0')), # +/- 50 SPY shares equivalent
+            max_portfolio_leverage=float(os.getenv('MAX_PORTFOLIO_LEVERAGE', '2.0')), # 2x leverage max
         )
         
         self.log = LogConfig(
