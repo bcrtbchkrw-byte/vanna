@@ -10,8 +10,11 @@ import numpy as np
 from loguru import logger
 from typing import Dict, List, Optional, Any
 
+from datetime import datetime
+
 from config import get_config
 from ibkr.data_fetcher import get_data_fetcher
+from ml.vanna_calculator import get_vanna_calculator
 
 class PortfolioManager:
     """
@@ -25,6 +28,7 @@ class PortfolioManager:
     def __init__(self):
         self.config = get_config()
         self.data_fetcher = get_data_fetcher()
+        self.vanna_calc = get_vanna_calculator()
         self.spy_history: Optional[pd.DataFrame] = None
         self.beta_cache: Dict[str, float] = {}
         
@@ -73,6 +77,58 @@ class PortfolioManager:
             logger.error(f"Error calculating beta for {symbol}: {e}")
             return 1.0
 
+    def _get_years_to_expiry(self, expiry_str: str) -> float:
+        """Parse IBKR expiry 'YYYYMMDD' to years."""
+        try:
+            if not expiry_str or len(expiry_str) < 8:
+                return 0.0
+            
+            # Handle YYYYMMDD
+            exp_date = datetime.strptime(expiry_str[:8], "%Y%m%d")
+            now = datetime.now()
+            
+            delta = exp_date - now
+            return max(delta.days / 365.0, 0.001) # Min 1 day
+        except Exception:
+            return 0.0
+
+    def _calculate_manual_delta(self, pos: Any, under_price: float) -> float:
+        """Calculate Delta manually using VannaCalculator if IBKR data missing."""
+        try:
+            contract = pos.contract
+            
+            # Extract inputs
+            K = contract.strike
+            T = self._get_years_to_expiry(contract.lastTradeDateOrContractMonth)
+            right = contract.right # 'C' or 'P'
+            option_type = 'call' if right == 'C' else 'put'
+            
+            # IV Estimation
+            # If we don't have IV, we are guessing.
+            # But we can assume a conservative Vol for risk (e.g. 50% or higher).
+            # Or better, we define S, K, T. Delta isn't linear with Vol, but reasonable.
+            # Ideally we use an IV from a similar option or VIX index mapping.
+            # For now, using 0.4 (40%) as a generic baseline for risk estimation 
+            # if we absolutely have no data.
+            sigma = 0.4 
+            
+            # Calculate
+            greeks = self.vanna_calc.calculate_all_greeks(
+                S=under_price,
+                K=K,
+                T=T,
+                sigma=sigma,
+                option_type=option_type
+            )
+            
+            if greeks:
+                return greeks.delta
+            return 1.0 # Fail safe (worst case for stock/ITM) or 0.0?
+            
+        except Exception as e:
+            logger.error(f"Manual delta calc failed for {pos.contract.symbol}: {e}")
+            return 1.0
+
     async def calculate_portfolio_risk(self, positions: List[Any], current_prices: Dict[str, float], net_liq: float) -> Dict[str, float]:
         """
         Calculate aggregate portfolio risk metrics.
@@ -106,11 +162,11 @@ class PortfolioManager:
                 # If modelGreeks is None, we are blind. 
                 # Ideally we ask IBKR or compute it.
                 # For MVP, we assume delta based on moneyness if missing, but better to skip or warn.
-                 if hasattr(pos, 'modelGreeks') and pos.modelGreeks:
-                     unit_delta = pos.modelGreeks.delta or 0.5 # Fallback 0.5 ATM
-                 else:
-                     logger.warning(f"⚠️ No greeks for {symbol} option. Assuming Delta=0.5")
-                     unit_delta = 0.5
+                if hasattr(pos, 'modelGreeks') and pos.modelGreeks and pos.modelGreeks.delta is not None:
+                     unit_delta = pos.modelGreeks.delta
+                else:
+                     logger.warning(f"⚠️ No greeks for {symbol} option. Calculating manually...")
+                     unit_delta = self._calculate_manual_delta(pos, price)
             
             # 2. Get Beta
             beta = await self.get_beta(symbol)
