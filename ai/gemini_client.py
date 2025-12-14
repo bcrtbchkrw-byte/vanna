@@ -10,6 +10,8 @@ from loguru import logger
 
 from ai.prompts import get_gemini_batch_analysis_prompt, get_gemini_fundamental_prompt, parse_gemini_response
 from config import get_config
+from core.circuit_breaker import get_gemini_circuit_breaker
+from core.exceptions import APIConnectionError
 
 
 class GeminiClient:
@@ -50,6 +52,9 @@ class GeminiClient:
         self.daily_output_tokens = 0
         self.daily_cost = 0.0
         self.silent_mode = False
+        
+        # Circuit breaker for API resilience
+        self._circuit_breaker = get_gemini_circuit_breaker()
         
         logger.info(f"✅ Gemini client initialized (Model: 3-Pro-Preview, Limit: ${self.daily_limit_usd:.2f})")
     
@@ -136,7 +141,10 @@ class GeminiClient:
             return {'success': False, 'error': str(e)}
 
     async def _generate_async(self, prompt: str) -> Optional[str]:
-        """Generate content asynchronously with usage tracking"""
+        """Generate content asynchronously with usage tracking and circuit breaker."""
+        # Check circuit breaker before making API call
+        self._circuit_breaker.check()
+        
         try:
             # Use JSON mode if possible (Gemini supports it via mime_type)
             response = await self.model.generate_content_async(
@@ -153,14 +161,16 @@ class GeminiClient:
                     self._track_usage(usage.prompt_token_count, usage.candidates_token_count)
                 else:
                     self._track_usage(len(prompt)//4, len(response.text)//4)
-                    
+                
+                # Record success
+                self._circuit_breaker.record_success()
                 return str(response.text)
-                
-            return None
-                
+            
             return None
             
         except Exception as e:
+            # Record failure for circuit breaker
+            self._circuit_breaker.record_failure()
             logger.error(f"Error calling Gemini API: {e}")
             return None
 

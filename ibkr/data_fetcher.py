@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from ib_insync import Contract, Index, Stock
 
 from core.logger import get_logger
+from core.exceptions import DataError, IBKRDisconnectedError
 from ibkr.connection import get_ibkr_connection
 
 logger = get_logger()

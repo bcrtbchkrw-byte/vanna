@@ -1,19 +1,62 @@
 """
 Vanna Logger Module
 
-Configures loguru for structured logging.
-Auto-initializes in subprocesses to avoid "Logger not initialized" warnings.
+Configures loguru for structured logging with JSON support.
+Features:
+- Console output (colored)
+- File logging (text + JSON)
+- Correlation ID support
+- Trade-specific logs
+- Auto-initialization for subprocesses
 """
 
 import sys
 import os
+import json
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
+from contextvars import ContextVar
 
 from loguru import logger
 
 # Track if we've set up in this process
 _logger_initialized = False
 _process_id = None
+
+# Context variable for correlation ID (async-safe)
+correlation_id_var: ContextVar[Optional[str]] = ContextVar('correlation_id', default=None)
+
+
+def set_correlation_id(corr_id: str) -> None:
+    """Set correlation ID for current async context."""
+    correlation_id_var.set(corr_id)
+
+
+def get_correlation_id() -> Optional[str]:
+    """Get correlation ID for current async context."""
+    return correlation_id_var.get()
+
+
+def _json_sink(message):
+    """Custom sink that outputs JSON format."""
+    record = message.record
+    
+    log_entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": record["level"].name,
+        "message": record["message"],
+        "module": record["name"],
+        "function": record["function"],
+        "line": record["line"],
+        "correlation_id": get_correlation_id(),
+    }
+    
+    # Add extra fields if present
+    if record["extra"]:
+        log_entry["extra"] = record["extra"]
+    
+    print(json.dumps(log_entry), file=sys.stdout, flush=True)
 
 
 def _ensure_minimal_logger():
@@ -48,7 +91,8 @@ def _ensure_minimal_logger():
 def setup_logger(
     level: str = "INFO",
     log_dir: str = "logs",
-    rotation: str = "100 MB"
+    rotation: str = "100 MB",
+    json_output: bool = False
 ) -> None:
     """
     Initialize the logger with console and file handlers.
@@ -57,11 +101,12 @@ def setup_logger(
         level: Log level (DEBUG, INFO, WARNING, ERROR)
         log_dir: Directory for log files
         rotation: Log rotation size
+        json_output: If True, use JSON format for console output
     
     Example:
         from core.logger import setup_logger, get_logger
         
-        setup_logger(level="DEBUG")
+        setup_logger(level="DEBUG", json_output=True)
         logger = get_logger()
         logger.info("Application started")
     """
@@ -83,19 +128,26 @@ def setup_logger(
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
     
-    # Console handler (stdout)
-    logger.add(
-        sys.stdout,
-        level=level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-               "<level>{level: <8}</level> | "
-               "<cyan>{name}</cyan>:<cyan>{function}</cyan> - "
-               "<level>{message}</level>",
-        colorize=True,
-        enqueue=True,  # Thread-safe
-    )
+    # Console handler
+    if json_output:
+        logger.add(
+            _json_sink,
+            level=level,
+            enqueue=True,
+        )
+    else:
+        logger.add(
+            sys.stdout,
+            level=level,
+            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                   "<level>{level: <8}</level> | "
+                   "<cyan>{name}</cyan>:<cyan>{function}</cyan> - "
+                   "<level>{message}</level>",
+            colorize=True,
+            enqueue=True,
+        )
     
-    # Main log file
+    # Main log file (text format for readability)
     logger.add(
         log_path / "vanna_{time:YYYY-MM-DD}.log",
         level=level,
@@ -103,6 +155,17 @@ def setup_logger(
         rotation=rotation,
         retention="7 days",
         compression="gz",
+        enqueue=True,
+    )
+    
+    # JSON log file (for machine parsing)
+    logger.add(
+        log_path / "vanna_{time:YYYY-MM-DD}.jsonl",
+        level=level,
+        format="{message}",
+        serialize=True,  # Loguru's built-in JSON serialization
+        rotation=rotation,
+        retention="7 days",
         enqueue=True,
     )
     
@@ -144,3 +207,18 @@ def get_logger():
     """
     _ensure_minimal_logger()
     return logger
+
+
+def log_with_context(level: str, message: str, **kwargs):
+    """
+    Log with automatic correlation ID.
+    
+    Usage:
+        log_with_context("info", "Processing order", symbol="SPY", quantity=5)
+    """
+    corr_id = get_correlation_id()
+    if corr_id:
+        message = f"[{corr_id}] {message}"
+    
+    log_func = getattr(logger, level.lower())
+    log_func(message, **kwargs)

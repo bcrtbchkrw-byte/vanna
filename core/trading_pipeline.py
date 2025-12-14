@@ -14,6 +14,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, date, time
 from dataclasses import dataclass
 import asyncio
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 
@@ -491,18 +492,20 @@ Then a brief reason on the next line.
     # =========================================================================
     
     def _is_market_open(self) -> bool:
-        """Check if market is currently open."""
-        now = datetime.now()
+        """Check if US stock market is currently open (NYSE/NASDAQ hours)."""
+        # CRITICAL: Use Eastern Time, not local time!
+        ET = ZoneInfo("America/New_York")
+        now_et = datetime.now(ET)
         
         # Weekend check
-        if now.weekday() >= 5:
+        if now_et.weekday() >= 5:
             return False
         
         # Market hours: 9:30 AM - 4:00 PM ET
         market_open = time(9, 30)
         market_close = time(16, 0)
         
-        return market_open <= now.time() <= market_close
+        return market_open <= now_et.time() <= market_close
     
     def get_status(self) -> Dict[str, Any]:
         """Get current pipeline status."""

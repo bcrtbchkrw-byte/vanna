@@ -6,6 +6,7 @@ Features:
 - Automatic reconnection with exponential backoff
 - Health check for Docker healthcheck
 - Clean disconnect handling
+- Circuit breaker protection
 """
 
 import asyncio
@@ -14,6 +15,8 @@ from typing import Optional
 from ib_insync import IB
 
 from core.logger import get_logger
+from core.circuit_breaker import get_ibkr_circuit_breaker
+from core.exceptions import IBKRConnectionError, IBKRDisconnectedError
 
 logger = get_logger()
 
@@ -39,7 +42,6 @@ class IBKRConnection:
     def __init__(
         self,
         host: str = "127.0.0.1",
-
         port: int = 4002,
         client_id: int = 99,
         account: str = ""
@@ -53,6 +55,9 @@ class IBKRConnection:
         self._connected = False
         self._connection_attempts = 0
         self._max_retries = 10
+        
+        # Circuit breaker for connection resilience
+        self._circuit_breaker = get_ibkr_circuit_breaker()
     
     @property
     def is_connected(self) -> bool:
@@ -63,7 +68,7 @@ class IBKRConnection:
     def ib(self) -> IB:
         """Get the underlying IB instance."""
         if self._ib is None:
-            raise RuntimeError("Not connected to IBKR. Call connect() first.")
+            raise IBKRDisconnectedError("Not connected to IBKR. Call connect() first.")
         return self._ib
     
     async def connect(self) -> bool:

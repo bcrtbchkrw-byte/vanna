@@ -10,6 +10,7 @@ import os
 import joblib
 import pandas as pd
 import numpy as np
+import threading
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
@@ -418,17 +419,21 @@ class TradeSuccessPredictor:
         return max(0.20, min(0.85, base_prob))
 
 
-# Singleton
+# Singleton (thread-safe)
 _predictor: Optional[TradeSuccessPredictor] = None
+_predictor_lock = threading.Lock()
 
 
 def get_trade_success_predictor(
     model_path: str = "data/models/trade_success_predictor.pkl"
 ) -> TradeSuccessPredictor:
-    """Get or create singleton predictor."""
+    """Get or create singleton predictor (thread-safe)."""
     global _predictor
+    # Double-checked locking pattern for thread safety
     if _predictor is None:
-        _predictor = TradeSuccessPredictor(model_path)
+        with _predictor_lock:
+            if _predictor is None:
+                _predictor = TradeSuccessPredictor(model_path)
     return _predictor
 
 

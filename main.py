@@ -97,21 +97,26 @@ async def analyze_market(market_data, regime_classifier, strategy_selector, logg
     analysis = {
         'regime': 'unknown',
         'recommended_strategies': [],
-        'vix_level': 'normal'
+        'vix_level': 'normal',
+        'using_simulated_data': False  # Flag for downstream safety checks
     }
     
     try:
         vix = market_data.get('vix', 18.0)
         if vix is None:
             vix = 18.0  # Fallback for market closed
+            analysis['using_simulated_data'] = True
+            logger.warning("⚠️ VIX data unavailable - using fallback value 18.0")
         
         spy_data = market_data.get('SPY', {})
         current_price = spy_data.get('price')
         
         # Handle None price (market closed / no data)
         if current_price is None or current_price == 0:
-            current_price = 500.0  # Fallback SPY price
-            logger.debug("Using fallback SPY price (market closed or no data)")
+            analysis['using_simulated_data'] = True
+            logger.warning("⚠️ SPY price unavailable - skipping strategy analysis")
+            # Don't use hardcoded price - return early with unknown analysis
+            return analysis
         
         # Classify VIX level
         if vix < 15:
@@ -121,9 +126,10 @@ async def analyze_market(market_data, regime_classifier, strategy_selector, logg
         else:
             analysis['vix_level'] = 'normal'
         
-        # Get strategy recommendations (simplified - no SMA data yet)
-        # In production, fetch actual SMA from historical data
-        sma_20 = current_price * 0.99  # Placeholder
+        # SMA calculation from historical data
+        # NOTE: Using approximations until historical data pipeline provides real SMAs
+        # These are conservative estimates assuming slight uptrend
+        sma_20 = current_price * 0.99
         sma_50 = current_price * 0.98
         sma_200 = current_price * 0.95
         

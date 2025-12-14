@@ -415,9 +415,20 @@ class DataMaintenanceManager:
                 else:
                     merged_df = live_df
                 
-                # Remove duplicates by timestamp
+                # Remove duplicates by timestamp and LOG count
+                pre_dedup_count = len(merged_df)
                 merged_df = merged_df.drop_duplicates(subset=['timestamp'], keep='last')
+                duplicates_removed = pre_dedup_count - len(merged_df)
+                if duplicates_removed > 0:
+                    logger.info(f"   🗑️ Removed {duplicates_removed} duplicate timestamps")
+                
                 merged_df = merged_df.sort_values('timestamp').reset_index(drop=True)
+                
+                # Validate timestamp continuity (smoke test)
+                if len(merged_df) > 1:
+                    gaps = self.find_gaps(merged_df, max_gap_minutes=5)  # 5 min tolerance
+                    if gaps:
+                        logger.warning(f"   ⚠️ Found {len(gaps)} gaps in merged data (>5min)")
                 
                 new_bars = len(merged_df) - len(existing_df) if not existing_df.empty else len(merged_df)
                 logger.info(f"   After merge: {len(merged_df):,} bars (+{new_bars} new)")
@@ -435,8 +446,14 @@ class DataMaintenanceManager:
         # 5. Recalculate Greeks for all updated files
         await self._recalculate_vanna_parquet()
         
+        # 6. Aggregate 1min to daily for _1day.parquet
+        daily_results = await self._aggregate_to_daily()
+        
+        total_1min = sum(v for v in results.values() if v > 0)
+        total_daily = sum(v for v in daily_results.values() if v > 0)
+        
         logger.info("=" * 60)
-        logger.info(f"Merge complete: {sum(v for v in results.values() if v > 0)} new bars added")
+        logger.info(f"Merge complete: {total_1min} new 1min bars, {total_daily} days updated")
         logger.info("=" * 60)
         
         return results
@@ -460,6 +477,93 @@ class DataMaintenanceManager:
                 logger.info(f"   ✅ {symbol}_1min_vanna.parquet updated")
             except Exception as e:
                 logger.error(f"   ❌ Error calculating Greeks for {symbol}: {e}")
+    
+    async def _aggregate_to_daily(self) -> Dict[str, int]:
+        """
+        Aggregate 1min bars to daily OHLCV and update _1day.parquet.
+        
+        Steps:
+        1. Load *_1min.parquet
+        2. Aggregate to daily OHLCV (open=first, high=max, low=min, close=last, volume=sum)
+        3. Load existing *_1day.parquet
+        4. Merge new daily bars (deduplicate by date)
+        5. Save updated *_1day.parquet
+        
+        Returns:
+            Dict with new daily bars count per symbol
+        """
+        logger.info("📅 Aggregating 1min → Daily...")
+        
+        results = {}
+        
+        for symbol in self.SYMBOLS:
+            try:
+                # 1. Load 1min data
+                min_path = self.storage.data_dir / f"{symbol}_1min.parquet"
+                if not min_path.exists():
+                    logger.info(f"   ⏭️ {symbol}: No 1min data")
+                    results[symbol] = 0
+                    continue
+                
+                min_df = pd.read_parquet(min_path)
+                min_df['timestamp'] = pd.to_datetime(min_df['timestamp'])
+                min_df['date'] = min_df['timestamp'].dt.date
+                
+                # 2. Aggregate to daily OHLCV
+                daily_agg = min_df.groupby('date').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                }).reset_index()
+                
+                daily_agg['symbol'] = symbol
+                daily_agg['timestamp'] = pd.to_datetime(daily_agg['date'])
+                
+                # Add VIX if available (use daily close)
+                if 'vix' in min_df.columns:
+                    vix_daily = min_df.groupby('date')['vix'].last().reset_index()
+                    daily_agg = daily_agg.merge(vix_daily, on='date', how='left')
+                
+                # 3. Load existing daily data
+                day_path = self.storage.data_dir / f"{symbol}_1day.parquet"
+                
+                if day_path.exists():
+                    existing_df = pd.read_parquet(day_path)
+                    existing_df['date'] = pd.to_datetime(existing_df['timestamp']).dt.date
+                    
+                    # 4. Merge and deduplicate by date
+                    # Keep new data where date overlaps (fresher)
+                    existing_dates = set(existing_df['date'])
+                    new_dates = set(daily_agg['date'])
+                    overlap = existing_dates & new_dates
+                    
+                    if overlap:
+                        existing_df = existing_df[~existing_df['date'].isin(overlap)]
+                    
+                    merged_df = pd.concat([existing_df, daily_agg], ignore_index=True)
+                else:
+                    merged_df = daily_agg
+                
+                # Drop temp date column
+                if 'date' in merged_df.columns:
+                    merged_df = merged_df.drop(columns=['date'])
+                
+                merged_df = merged_df.sort_values('timestamp').reset_index(drop=True)
+                
+                # 5. Save
+                new_days = len(daily_agg)
+                merged_df.to_parquet(day_path, index=False, compression='snappy')
+                
+                logger.info(f"   ✅ {symbol}: {new_days} days aggregated, total {len(merged_df)} days")
+                results[symbol] = new_days
+                
+            except Exception as e:
+                logger.error(f"   ❌ Error aggregating daily for {symbol}: {e}")
+                results[symbol] = -1
+        
+        return results
     
     def should_run_monthly_maintenance(self) -> bool:
         """Check if today is maintenance day (1st of month)."""

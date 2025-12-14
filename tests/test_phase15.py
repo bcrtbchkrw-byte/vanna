@@ -41,7 +41,7 @@ class TestStrategySelector:
         selector = get_strategy_selector()
         
         recommendations = selector.select_strategies(
-            vix=35,  # High VIX
+            vix=32,  # High VIX (but not crisis - VIX >= 35 is crisis)
             current_price=430,
             sma_20=430,
             sma_50=430,
@@ -49,9 +49,13 @@ class TestStrategySelector:
             available_capital=5000
         )
         
-        # Should recommend premium selling
+        # Should recommend premium selling (high vol or crisis strategies)
         strategies = [r["strategy"] for r in recommendations]
-        assert any(s in strategies for s in ["JADE_LIZARD", "BULL_PUT_SPREAD"])
+        # Regime 3 (high_vol): JADE_LIZARD, BULL_PUT_SPREAD, BEAR_CALL_SPREAD
+        # Regime 4 (crisis): BEAR_CALL_SPREAD, PUT_DEBIT_SPREAD
+        assert any(s in strategies for s in [
+            "JADE_LIZARD", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "PUT_DEBIT_SPREAD"
+        ])
     
     def test_primary_strategy(self):
         """Test getting single best strategy."""

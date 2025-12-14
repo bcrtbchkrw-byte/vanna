@@ -14,15 +14,17 @@ class TestTradingEnvironment:
     @pytest.fixture
     def mock_parquet_data(self, tmp_path):
         """Create mock parquet data for testing."""
-        # Create minimal RL-ready data
+        # Create minimal RL-ready data with all 63 market features
         n_rows = 500
         data = {
+            # Time (6)
             'sin_time': np.random.uniform(-1, 1, n_rows),
             'cos_time': np.random.uniform(-1, 1, n_rows),
             'sin_dow': np.random.uniform(-1, 1, n_rows),
             'cos_dow': np.random.uniform(-1, 1, n_rows),
             'sin_doy': np.random.uniform(-1, 1, n_rows),
             'cos_doy': np.random.uniform(-1, 1, n_rows),
+            # VIX (8)
             'vix_ratio': np.random.uniform(0.8, 1.2, n_rows),
             'vix_in_contango': np.random.randint(0, 2, n_rows),
             'vix_change_1d': np.random.uniform(-0.1, 0.1, n_rows),
@@ -31,15 +33,19 @@ class TestTradingEnvironment:
             'vix_zscore': np.random.uniform(-2, 2, n_rows),
             'vix_norm': np.random.uniform(-2, 2, n_rows),
             'vix3m_norm': np.random.uniform(-2, 2, n_rows),
+            # Regime (1)
             'regime': np.random.randint(0, 5, n_rows),
+            # Options (3)
             'options_iv_atm': np.zeros(n_rows),
             'options_put_call_ratio': np.zeros(n_rows),
             'options_volume_norm': np.zeros(n_rows),
+            # Price (5)
             'return_1m': np.random.uniform(-0.01, 0.01, n_rows),
             'return_5m': np.random.uniform(-0.02, 0.02, n_rows),
             'volatility_20': np.random.uniform(0.1, 0.3, n_rows),
             'momentum_20': np.random.uniform(-0.05, 0.05, n_rows),
             'range_pct': np.random.uniform(0, 0.02, n_rows),
+            # Greeks (7)
             'delta': np.random.uniform(-0.5, 0.5, n_rows),
             'gamma': np.random.uniform(0, 0.1, n_rows),
             'theta': np.random.uniform(-0.1, 0, n_rows),
@@ -47,18 +53,45 @@ class TestTradingEnvironment:
             'vanna': np.random.uniform(-0.1, 0.1, n_rows),
             'charm': np.random.uniform(-0.01, 0.01, n_rows),
             'volga': np.random.uniform(0, 0.05, n_rows),
+            # ML Regime outputs (4)
             'regime_ml': np.random.randint(0, 5, n_rows),
             'regime_adj_position': np.random.uniform(0.5, 1.2, n_rows),
             'regime_adj_delta': np.random.uniform(-0.2, -0.1, n_rows),
             'regime_adj_dte': np.random.randint(-10, 10, n_rows),
+            # ML DTE outputs (2)
             'dte_confidence': np.random.uniform(0.5, 1.0, n_rows),
             'optimal_dte_norm': np.random.uniform(0.2, 1.0, n_rows),
+            # ML Trade outputs (1)
             'trade_prob': np.random.uniform(0.3, 0.7, n_rows),
+            # Binary signals (5)
             'signal_high_prob': np.random.randint(0, 2, n_rows),
             'signal_low_vol': np.random.randint(0, 2, n_rows),
             'signal_crisis': np.zeros(n_rows, dtype=int),
             'signal_contango': np.random.randint(0, 2, n_rows),
             'signal_backwardation': np.random.randint(0, 2, n_rows),
+            # Major event features (4) - NEW
+            'days_to_major_event': np.random.randint(0, 30, n_rows),
+            'is_event_week': np.random.randint(0, 2, n_rows),
+            'is_event_day': np.zeros(n_rows, dtype=int),
+            'event_iv_boost': np.random.uniform(0, 0.1, n_rows),
+            # Daily features (17) - NEW
+            'day_sma_200': np.random.uniform(0.95, 1.05, n_rows),
+            'day_sma_50': np.random.uniform(0.98, 1.02, n_rows),
+            'day_sma_20': np.random.uniform(0.99, 1.01, n_rows),
+            'day_price_vs_sma200': np.random.uniform(-0.1, 0.1, n_rows),
+            'day_price_vs_sma50': np.random.uniform(-0.05, 0.05, n_rows),
+            'day_rsi_14': np.random.uniform(30, 70, n_rows),
+            'day_atr_14': np.random.uniform(1, 5, n_rows),
+            'day_atr_pct': np.random.uniform(0.01, 0.03, n_rows),
+            'day_bb_position': np.random.uniform(-1, 1, n_rows),
+            'day_macd': np.random.uniform(-1, 1, n_rows),
+            'day_macd_hist': np.random.uniform(-0.5, 0.5, n_rows),
+            'day_above_sma200': np.random.randint(0, 2, n_rows),
+            'day_above_sma50': np.random.randint(0, 2, n_rows),
+            'day_sma_50_200_ratio': np.random.uniform(0.95, 1.05, n_rows),
+            'day_days_to_major_event': np.random.randint(0, 30, n_rows),
+            'day_is_event_week': np.random.randint(0, 2, n_rows),
+            'day_event_iv_boost': np.random.uniform(0, 0.1, n_rows),
         }
         
         df = pd.DataFrame(data)
@@ -80,7 +113,7 @@ class TestTradingEnvironment:
         )
         
         assert env is not None
-        assert env.observation_space.shape == (49,)
+        assert env.observation_space.shape == (70,)
         assert env.action_space.n == 5
     
     def test_reset(self, mock_parquet_data):
@@ -94,7 +127,7 @@ class TestTradingEnvironment:
         
         obs, info = env.reset()
         
-        assert obs.shape == (49,)
+        assert obs.shape == (70,)
         assert 'capital' in info
         assert info['capital'] == 10000.0
         assert 'symbol' in info
@@ -112,7 +145,7 @@ class TestTradingEnvironment:
         
         # Test HOLD action
         obs, reward, terminated, truncated, info = env.step(0)
-        assert obs.shape == (49,)
+        assert obs.shape == (70,)
         assert isinstance(reward, float)
         
         # Test OPEN action

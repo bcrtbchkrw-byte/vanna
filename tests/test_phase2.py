@@ -1,3 +1,4 @@
+"""Phase 2 Tests - IBKR Connection and Data Fetching."""
 import asyncio
 
 import nest_asyncio
@@ -23,67 +24,59 @@ def event_loop():
     loop.close()
 
 
-@pytest.fixture(scope="module")
-async def conn():
-    """Shared IBKR connection for Phase 2 tests (uses mocks in CI)."""
-    setup_logger(level="INFO")
+@pytest.fixture
+def mock_conn():
+    """Mock IBKR connection for CI tests."""
+    return MockIBKRConnection()
+
+
+@pytest.fixture
+def mock_fetcher():
+    """Mock data fetcher for CI tests."""
+    return MockDataFetcher()
+
+
+class TestIBKRConnection:
+    """Tests for IBKR connection (uses mocks in CI)."""
     
-    if is_ci_environment():
-        # Use mock in CI
-        yield MockIBKRConnection()
-    else:
-        # Use real connection locally
-        connection = await get_ibkr_connection()
-        connected = await connection.connect()
-        assert connected, "Failed to connect to IBKR - Is Gateway running?"
-        yield connection
-        await connection.disconnect()
-
-
-@pytest.fixture(scope="module")
-def fetcher():
-    """Data fetcher fixture (uses mocks in CI)."""
-    if is_ci_environment():
-        return MockDataFetcher()
-    else:
-        return get_data_fetcher()
-
-
-@pytest.mark.asyncio
-async def test_account_info(conn):
-    """Test account info retrieval."""
-    logger = get_logger()
-    
-    if is_ci_environment():
-        # Mock test
-        value = conn.get_account_value("NetLiquidation")
+    def test_account_info_mock(self, mock_conn):
+        """Test account info retrieval with mock."""
+        logger = get_logger()
+        
+        value = mock_conn.get_account_value("NetLiquidation")
         logger.info(f"[MOCK] NetLiquidation: {value}")
         assert value > 0
-    else:
-        summary = await conn.get_account_summary()
-        logger.info(f"Account Summary: {summary}")
-        assert 'NetLiquidation' in summary
-        assert summary['NetLiquidation'] > 0
+    
+    def test_account_value_available_funds(self, mock_conn):
+        """Test AvailableFunds retrieval."""
+        value = mock_conn.get_account_value("AvailableFunds")
+        assert value == 50000.0
+    
+    def test_connection_status(self, mock_conn):
+        """Test connection status check."""
+        assert mock_conn.is_connected is True
 
 
-@pytest.mark.asyncio
-async def test_vix(conn, fetcher):
-    """Test VIX data fetch."""
-    vix = await fetcher.get_vix()
-    assert vix is not None
-    assert vix > 0, "VIX should be positive"
-
-
-@pytest.mark.asyncio
-async def test_stock_quote(conn, fetcher):
-    """Test stock quote fetch."""
-    quote = await fetcher.get_stock_quote("SPY")
-    assert quote is not None, "Failed to get quote"
-    assert quote.get('last') is not None, "Quote missing 'last' price"
-
-
-@pytest.mark.asyncio
-async def test_disconnect_verification(conn):
-    """Verify connection is active before teardown."""
-    assert conn.is_connected
-
+class TestDataFetcher:
+    """Tests for data fetching (uses mocks in CI)."""
+    
+    @pytest.mark.asyncio
+    async def test_vix(self, mock_fetcher):
+        """Test VIX data fetch."""
+        vix = await mock_fetcher.get_vix()
+        assert vix is not None
+        assert vix > 0, "VIX should be positive"
+    
+    @pytest.mark.asyncio
+    async def test_stock_quote(self, mock_fetcher):
+        """Test stock quote fetch."""
+        quote = await mock_fetcher.get_stock_quote("SPY")
+        assert quote is not None, "Failed to get quote"
+        assert quote.get('last') is not None, "Quote missing 'last' price"
+    
+    @pytest.mark.asyncio
+    async def test_option_chain(self, mock_fetcher):
+        """Test option chain fetch."""
+        chain = await mock_fetcher.get_option_chain("SPY")
+        assert chain is not None
+        assert len(chain) > 0

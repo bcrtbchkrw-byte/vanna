@@ -5,10 +5,11 @@ Monitors active positions and manages profit taking / stop losses.
 """
 from typing import Any, Optional
 
-from ib_insync import MarketOrder
+from ib_insync import LimitOrder
 from loguru import logger
 
 from execution.order_manager import get_order_manager
+from core.exceptions import OrderPlacementError
 
 
 class ExitManager:
@@ -87,27 +88,64 @@ class ExitManager:
             return False
 
     async def _close_position(self, position: Any, reason: str):
-        """Close the position with error handling."""
+        """
+        Close the position with Limit order to reduce slippage.
+        
+        Uses midpoint price with buffer:
+        - Take Profit: 1% buffer (can wait for fill)
+        - Stop Loss: 2% aggressive buffer (need quick fill)
+        """
         try:
+            from ib_insync import LimitOrder
+            from ibkr.data_fetcher import get_data_fetcher
+            
             contract = position.contract
             qty = abs(position.position)
             
             # If short (negative pos), we Buy to Close
             action = 'BUY' if position.position < 0 else 'SELL'
             
-            logger.info(f"Closing {contract.localSymbol} ({reason}): {action} {qty}")
+            # Get current market price for limit order
+            fetcher = get_data_fetcher()
+            quote = await fetcher.get_stock_quote(contract.symbol)
             
-            # Market order for immediate exit? Or limit?
-            # Safety: Market for Stop Loss, Limit for TP?
-            # For simplicity, Market order now.
-            order = MarketOrder(action, qty)
+            if quote and quote.get('bid') and quote.get('ask'):
+                bid = quote['bid']
+                ask = quote['ask']
+                mid = (bid + ask) / 2
+                
+                # Buffer based on reason
+                if reason == "Stop Loss":
+                    # Aggressive: 2% worse than mid (need quick fill)
+                    buffer = 0.02
+                else:
+                    # Conservative: 1% worse than mid
+                    buffer = 0.01
+                
+                if action == 'BUY':
+                    # Buying: limit slightly above ask
+                    limit_price = round(ask * (1 + buffer), 2)
+                else:
+                    # Selling: limit slightly below bid
+                    limit_price = round(bid * (1 - buffer), 2)
+            else:
+                # Fallback: use avgCost with buffer if no quote
+                logger.warning(f"No quote for {contract.symbol}, using avgCost")
+                limit_price = round(abs(position.avgCost) * (1.02 if action == 'BUY' else 0.98), 2)
+            
+            logger.info(f"Closing {contract.localSymbol} ({reason}): {action} {qty} @ LIMIT {limit_price}")
+            
+            # Limit order to reduce slippage
+            order = LimitOrder(action, qty, limit_price)
             
             await self.order_manager.place_order(contract, order)
             
-        except Exception as e:
+        except OrderPlacementError as e:
             logger.error(f"CRITICAL: Failed to close position ({reason}): {e}")
-            # TODO: Notify user via Telegram for critical failures
-            raise  # Re-raise to ensure caller knows about failure
+            raise
+        except Exception as e:
+            logger.error(f"CRITICAL: Unexpected error closing position ({reason}): {e}")
+            raise OrderPlacementError(f"Failed to close position: {e}") from e
 
 
 # Singleton

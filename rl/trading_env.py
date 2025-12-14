@@ -2,7 +2,7 @@
 Trading Environment for Reinforcement Learning.
 
 Uses REAL historical data from *_rl.parquet files (enriched).
-40 market features + 7 position features = 47 total features.
+63 market features + 7 position features = 70 total features.
 """
 from typing import Any, SupportsFloat, Optional, List
 from pathlib import Path
@@ -22,7 +22,7 @@ class TradingEnvironment(gym.Env):
     
     Loads data from *_1min_rl.parquet files (enriched with ML outputs).
     
-    State: 47 features (40 market + 7 position)
+    State: 70 features (63 market + 7 position)
     Actions: 0=HOLD, 1=OPEN, 2=CLOSE, 3=INCREASE, 4=DECREASE
     """
     

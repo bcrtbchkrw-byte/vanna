@@ -11,6 +11,7 @@ XGBoost classifier for detecting market regimes:
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 import numpy as np
 import pandas as pd
 import joblib
@@ -260,13 +261,17 @@ class RegimeClassifier:
         return adjustments.get(regime, adjustments[1])
 
 
-# Singleton
+# Singleton (thread-safe)
 _classifier: Optional[RegimeClassifier] = None
+_classifier_lock = threading.Lock()
 
 
 def get_regime_classifier() -> RegimeClassifier:
-    """Get or create regime classifier."""
+    """Get or create regime classifier (thread-safe)."""
     global _classifier
+    # Double-checked locking pattern for thread safety
     if _classifier is None:
-        _classifier = RegimeClassifier()
+        with _classifier_lock:
+            if _classifier is None:
+                _classifier = RegimeClassifier()
     return _classifier
