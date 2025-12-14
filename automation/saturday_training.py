@@ -159,24 +159,26 @@ class SaturdayTrainingPipeline:
             self.results['daily_features'] = {'error': str(e)}
     
     async def _step_add_earnings_data(self):
-        """Step 2c: Add earnings dates to daily data."""
+        """Step 2c: Add major event data (FOMC, CPI, mega-cap earnings)."""
         logger.info("\n" + "=" * 50)
-        logger.info("📅 STEP 2c: Add Earnings Data")
+        logger.info("📅 STEP 2c: Add Major Events Data")
+        logger.info("   SPY/QQQ: AAPL,MSFT,NVDA,AMZN,GOOGL earnings")
+        logger.info("   TLT/GLD: FOMC meetings, CPI releases")
         logger.info("=" * 50)
         
         try:
-            from ml.earnings_data_fetcher import get_earnings_data_fetcher
+            from ml.earnings_data_fetcher import get_major_events_calculator
             
-            fetcher = get_earnings_data_fetcher()
-            results = fetcher.calculate_all()
+            calculator = get_major_events_calculator()
+            results = calculator.calculate_all()
             
-            self.results['earnings'] = results
+            self.results['major_events'] = results
             success = sum(results.values())
-            logger.info(f"✅ Earnings data added for {success}/{len(results)} symbols")
+            logger.info(f"✅ Major events added for {success}/{len(results)} symbols")
             
         except Exception as e:
-            logger.error(f"❌ Earnings data failed: {e}")
-            self.results['earnings'] = {'error': str(e)}
+            logger.error(f"❌ Major events failed: {e}")
+            self.results['major_events'] = {'error': str(e)}
     
     async def _step_inject_daily_features(self):
         """Step 2d: Inject daily features into 1min data (NO LOOK-AHEAD!)."""

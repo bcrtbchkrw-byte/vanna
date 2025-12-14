@@ -43,8 +43,8 @@ class DailyFeatureInjector:
         'macd', 'macd_signal', 'macd_hist',
         'above_sma200', 'above_sma50',
         'sma_50_200_ratio',
-        # Earnings
-        'days_to_earnings', 'is_earnings_week', 'is_earnings_month', 'earnings_iv_boost',
+        # Major events (FOMC/CPI for TLT/GLD, mega-cap earnings for SPY/QQQ)
+        'days_to_major_event', 'is_event_week', 'is_event_day', 'event_iv_boost',
     ]
     
     def __init__(self, data_dir: str = "data/vanna_ml"):
@@ -144,11 +144,11 @@ class DailyFeatureInjector:
                     df_merged[col] = df_merged[col].ffill().fillna(50)
                 elif 'bb_position' in col:
                     df_merged[col] = df_merged[col].ffill().fillna(0.5)
-                elif 'above' in col or 'is_' in col:
+                elif 'above' in col or 'is_event' in col:
                     df_merged[col] = df_merged[col].ffill().fillna(0).astype(int)
-                elif 'days_to_earnings' in col:
-                    df_merged[col] = df_merged[col].ffill().fillna(45).astype(int)
-                elif 'earnings_iv_boost' in col:
+                elif 'days_to_major_event' in col:
+                    df_merged[col] = df_merged[col].ffill().fillna(30).astype(int)
+                elif 'event_iv_boost' in col:
                     df_merged[col] = df_merged[col].ffill().fillna(1.0)
                 else:
                     df_merged[col] = df_merged[col].ffill().fillna(0)

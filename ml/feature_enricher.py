@@ -141,61 +141,18 @@ class FeatureEnricher:
             df['signal_backwardation'] = (df['vix_ratio'] > 1.05).astype(int)
         
         # ================================================================
-        # 5. Earnings features (options behave differently near earnings!)
+        # 5. Major Event features (placeholder - real values from daily injection)
         # ================================================================
-        # Note: For historical data, we estimate based on quarterly patterns
-        # Real-time uses actual earnings calendar
+        # Note: These are OVERWRITTEN by DailyFeatureInjector with proper
+        # symbol-specific events (FOMC/CPI for TLT/GLD, mega-cap earnings for SPY/QQQ)
+        # This section just ensures columns exist with defaults
         
-        if 'timestamp' in df.columns or 'datetime' in df.columns:
-            time_col = 'timestamp' if 'timestamp' in df.columns else 'datetime'
-            
-            # Simulate quarterly earnings (every ~90 days)
-            # Most stocks report Jan, Apr, Jul, Oct
-            earnings_months = [1, 4, 7, 10]  # Earnings months
-            
-            days_to_earnings = []
-            for idx in range(n):
-                ts = pd.Timestamp(df.iloc[idx][time_col])
-                month = ts.month
-                day = ts.day
-                
-                # Find next earnings month
-                next_earnings = None
-                for em in earnings_months:
-                    if em > month or (em == month and day < 15):
-                        next_earnings = em
-                        break
-                if next_earnings is None:
-                    next_earnings = earnings_months[0]  # January next year
-                
-                # Approximate days (simplified)
-                if next_earnings > month:
-                    days = (next_earnings - month) * 30 - day + 15
-                else:
-                    days = (12 - month + next_earnings) * 30 - day + 15
-                
-                days_to_earnings.append(max(0, min(days, 90)))
-            
-            df['days_to_earnings'] = days_to_earnings
-            df['is_earnings_week'] = (df['days_to_earnings'] <= 7).astype(int)
-            df['is_earnings_month'] = (df['days_to_earnings'] <= 30).astype(int)
-            
-            # IV typically spikes before earnings (use as multiplier hint)
-            # Near earnings (0-7 days): High IV expected
-            # Post earnings window: IV crush expected
-            df['earnings_iv_multiplier'] = 1.0
-            df.loc[df['days_to_earnings'] <= 7, 'earnings_iv_multiplier'] = 1.5
-            df.loc[df['days_to_earnings'] <= 3, 'earnings_iv_multiplier'] = 2.0
-            df.loc[(df['days_to_earnings'] > 60) & (df['days_to_earnings'] <= 75), 'earnings_iv_multiplier'] = 0.9
-            
-            logger.info("Added earnings features (days_to_earnings, is_earnings_week, earnings_iv_multiplier)")
-        else:
-            # No timestamp - use default values
-            df['days_to_earnings'] = 45  # Middle of quarter
-            df['is_earnings_week'] = 0
-            df['is_earnings_month'] = 0
-            df['earnings_iv_multiplier'] = 1.0
-            logger.warning("No timestamp column - using default earnings features")
+        if 'days_to_major_event' not in df.columns:
+            df['days_to_major_event'] = 30  # Default: ~1 month to event
+            df['is_event_week'] = 0
+            df['is_event_day'] = 0  
+            df['event_iv_boost'] = 1.0
+            logger.debug("Added placeholder major event features (will be overwritten by daily injection)")
         
         logger.info(f"✅ Enriched {n:,} rows with {len(df.columns)} total columns")
         

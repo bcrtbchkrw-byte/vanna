@@ -53,8 +53,8 @@ class TradingEnvironment(gym.Env):
         # Binary signals (5) - 0/1
         'signal_high_prob', 'signal_low_vol', 'signal_crisis',
         'signal_contango', 'signal_backwardation',
-        # Earnings features (4)
-        'days_to_earnings', 'is_earnings_week', 'is_earnings_month', 'earnings_iv_multiplier',
+        # Major event features (4) - FOMC/CPI for bonds, mega-cap earnings for equities
+        'days_to_major_event', 'is_event_week', 'is_event_day', 'event_iv_boost',
         # Daily features injected from 1day (17) - uses YESTERDAY's data (no lookahead!)
         'day_sma_200', 'day_sma_50', 'day_sma_20',
         'day_price_vs_sma200', 'day_price_vs_sma50',
@@ -64,7 +64,7 @@ class TradingEnvironment(gym.Env):
         'day_macd', 'day_macd_hist',
         'day_above_sma200', 'day_above_sma50',
         'day_sma_50_200_ratio',
-        'day_days_to_earnings', 'day_is_earnings_week', 'day_earnings_iv_boost',
+        'day_days_to_major_event', 'day_is_event_week', 'day_event_iv_boost',
     ]
     
     # Position features added at runtime (7)

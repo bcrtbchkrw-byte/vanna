@@ -1,118 +1,156 @@
 """
-Earnings Data Fetcher
+Major Events Calculator
 
-Fetches earnings dates from IBKR/Yahoo and adds to *_1day.parquet:
-- earnings_date (datetime)
-- days_to_earnings (int)
+Calculates days_to_major_event for each symbol:
+- SPY, QQQ: Mega-cap earnings (AAPL, MSFT, NVDA, AMZN, GOOGL)
+- TLT, GLD, IWM: FOMC meetings and CPI releases
 
-Uses IBKR as primary source, Yahoo Finance as fallback.
+These events cause volatility spikes and are critical for options trading.
 """
 from pathlib import Path
 from typing import List, Optional, Dict
 from datetime import datetime, date, timedelta
 import pandas as pd
+import numpy as np
 
 from loguru import logger
 
 
-class EarningsDataFetcher:
+class MajorEventsCalculator:
     """
-    Fetch earnings dates and add to *_1day.parquet files.
+    Calculate days_to_major_event for ETF parquet files.
+    
+    Events tracked:
+    - Mega-cap earnings (AAPL, MSFT, NVDA, AMZN, GOOGL)
+    - FOMC meetings (8 per year)
+    - CPI releases (12 per year)
     
     Features added:
-    - earnings_date: Next earnings announcement date
-    - days_to_earnings: Days until next earnings
-    - is_earnings_week: Binary (1 if <= 7 days)
-    - is_post_earnings: Binary (1 if within 3 days after)
+    - days_to_major_event: Days until next major event
+    - event_type: 'EARNINGS'|'FOMC'|'CPI'|None
+    - is_event_week: Binary (1 if <= 7 days)
+    - event_iv_boost: IV multiplier hint
     """
     
-    # Known earnings calendar (approximate quarterly dates for major ETFs/stocks)
-    # In production, this would come from IBKR/Yahoo API
-    KNOWN_EARNINGS_MONTHS = {
-        # ETFs don't have earnings but follow market quarters
-        'SPY': [],
-        'QQQ': [],
-        'IWM': [],
-        'GLD': [],
-        'TLT': [],
-        # Major stocks (approximate months)
-        'AAPL': [1, 4, 7, 10],
+    # 2024-2025 FOMC meeting dates (approximate - typically mid-week)
+    FOMC_DATES = [
+        # 2024
+        date(2024, 1, 31), date(2024, 3, 20), date(2024, 5, 1),
+        date(2024, 6, 12), date(2024, 7, 31), date(2024, 9, 18),
+        date(2024, 11, 7), date(2024, 12, 18),
+        # 2025
+        date(2025, 1, 29), date(2025, 3, 19), date(2025, 5, 7),
+        date(2025, 6, 18), date(2025, 7, 30), date(2025, 9, 17),
+        date(2025, 11, 5), date(2025, 12, 17),
+        # 2026
+        date(2026, 1, 28), date(2026, 3, 18), date(2026, 5, 6),
+    ]
+    
+    # CPI release dates (typically 2nd week of month)
+    # Generate for 2024-2026
+    CPI_DATES = [
+        # 2024
+        date(2024, 1, 11), date(2024, 2, 13), date(2024, 3, 12),
+        date(2024, 4, 10), date(2024, 5, 15), date(2024, 6, 12),
+        date(2024, 7, 11), date(2024, 8, 14), date(2024, 9, 11),
+        date(2024, 10, 10), date(2024, 11, 13), date(2024, 12, 11),
+        # 2025
+        date(2025, 1, 15), date(2025, 2, 12), date(2025, 3, 12),
+        date(2025, 4, 10), date(2025, 5, 13), date(2025, 6, 11),
+        date(2025, 7, 10), date(2025, 8, 13), date(2025, 9, 10),
+        date(2025, 10, 10), date(2025, 11, 12), date(2025, 12, 10),
+    ]
+    
+    # Mega-cap earnings months (approximate - typically late Jan, Apr, Jul, Oct)
+    # These affect SPY/QQQ significantly
+    MEGA_CAP_EARNINGS = {
+        'AAPL': [1, 4, 7, 10],   # ~last week of earnings month
         'MSFT': [1, 4, 7, 10],
-        'NVDA': [2, 5, 8, 11],
-        'TSLA': [1, 4, 7, 10],
-        'AMZN': [1, 4, 7, 10],
+        'NVDA': [2, 5, 8, 11],  # Slightly offset
+        'AMZN': [2, 4, 7, 10],
         'GOOGL': [1, 4, 7, 10],
-        'META': [1, 4, 7, 10],
+    }
+    
+    # Which events affect which symbols
+    SYMBOL_EVENTS = {
+        'SPY': ['EARNINGS'],  # Big 5 earnings
+        'QQQ': ['EARNINGS'],  # Big 5 earnings (even more weight)
+        'IWM': ['FOMC', 'CPI', 'EARNINGS'],  # All events
+        'TLT': ['FOMC', 'CPI'],  # Bond ETF = Fed sensitive
+        'GLD': ['FOMC', 'CPI'],  # Gold = inflation/Fed sensitive
     }
     
     def __init__(self, data_dir: str = "data/vanna_ml"):
         self.data_dir = Path(data_dir)
-        self._ibkr_fetcher = None
-        logger.info(f"EarningsDataFetcher initialized")
+        logger.info("MajorEventsCalculator initialized")
     
-    async def _get_ibkr_earnings(self, symbol: str) -> Optional[datetime]:
-        """Try to get earnings from IBKR."""
-        try:
-            from ibkr.data_fetcher import get_data_fetcher
-            fetcher = await get_data_fetcher()
-            return await fetcher.get_earnings_date(symbol)
-        except Exception as e:
-            logger.debug(f"IBKR earnings fetch failed for {symbol}: {e}")
-            return None
+    def _get_mega_cap_earnings_dates(self, year: int) -> List[date]:
+        """Generate approximate mega-cap earnings dates for a year."""
+        dates = []
+        for symbol, months in self.MEGA_CAP_EARNINGS.items():
+            for month in months:
+                # Approximate: 3rd week of month
+                earnings_date = date(year, month, 20)
+                dates.append(earnings_date)
+        return sorted(set(dates))
     
-    def _estimate_earnings_dates(self, symbol: str, df: pd.DataFrame) -> pd.Series:
+    def _find_next_event(
+        self, 
+        current_date: date, 
+        symbol: str
+    ) -> tuple:
         """
-        Estimate earnings dates based on quarterly pattern.
+        Find next major event for a symbol.
         
-        For ETFs (no earnings), returns NaT.
-        For stocks, estimates based on known quarterly pattern.
+        Returns:
+            (days_to_event, event_type)
         """
-        n = len(df)
-        earnings_dates = pd.Series([pd.NaT] * n, index=df.index)
+        event_types = self.SYMBOL_EVENTS.get(symbol, ['FOMC', 'CPI'])
         
-        # ETFs don't have earnings
-        earnings_months = self.KNOWN_EARNINGS_MONTHS.get(symbol, [1, 4, 7, 10])
+        min_days = 999
+        next_event_type = None
         
-        if not earnings_months:
-            # ETF - no earnings
-            return earnings_dates
-        
-        # Get dates from dataframe
-        if 'timestamp' in df.columns:
-            dates = pd.to_datetime(df['timestamp'])
-        else:
-            dates = pd.Series(df.index)
-        
-        for i, dt in enumerate(dates):
-            if pd.isna(dt):
-                continue
-            
-            # Find next earnings month
-            current_month = dt.month
-            current_day = dt.day
-            current_year = dt.year
-            
-            next_earnings = None
-            for em in sorted(earnings_months):
-                if em > current_month or (em == current_month and current_day < 15):
-                    # Earnings around mid-month
-                    next_earnings = datetime(current_year, em, 15)
+        # Check FOMC
+        if 'FOMC' in event_types:
+            for fomc_date in self.FOMC_DATES:
+                if fomc_date > current_date:
+                    days = (fomc_date - current_date).days
+                    if days < min_days:
+                        min_days = days
+                        next_event_type = 'FOMC'
                     break
-            
-            if next_earnings is None:
-                # Next year January
-                next_earnings = datetime(current_year + 1, earnings_months[0], 15)
-            
-            earnings_dates.iloc[i] = next_earnings
         
-        return earnings_dates
+        # Check CPI
+        if 'CPI' in event_types:
+            for cpi_date in self.CPI_DATES:
+                if cpi_date > current_date:
+                    days = (cpi_date - current_date).days
+                    if days < min_days:
+                        min_days = days
+                        next_event_type = 'CPI'
+                    break
+        
+        # Check mega-cap earnings
+        if 'EARNINGS' in event_types:
+            for year in [current_date.year, current_date.year + 1]:
+                for earnings_date in self._get_mega_cap_earnings_dates(year):
+                    if earnings_date > current_date:
+                        days = (earnings_date - current_date).days
+                        if days < min_days:
+                            min_days = days
+                            next_event_type = 'EARNINGS'
+                        break
+                if next_event_type == 'EARNINGS':
+                    break
+        
+        return min(min_days, 90), next_event_type
     
     def calculate_for_symbol(self, symbol: str) -> Optional[pd.DataFrame]:
         """
-        Add earnings features to 1day parquet.
+        Add major event features to 1day parquet.
         
         Args:
-            symbol: Stock symbol
+            symbol: ETF symbol
             
         Returns:
             Updated DataFrame
@@ -123,41 +161,52 @@ class EarningsDataFetcher:
             logger.warning(f"File not found: {filepath}")
             return None
         
-        logger.info(f"Adding earnings features for {symbol}...")
+        logger.info(f"Calculating major events for {symbol}...")
         
         df = pd.read_parquet(filepath)
         
-        # Get earnings dates (estimated or from API)
-        df['earnings_date'] = self._estimate_earnings_dates(symbol, df)
-        
-        # Calculate days to earnings
+        # Get dates
         if 'timestamp' in df.columns:
-            current_dates = pd.to_datetime(df['timestamp'])
+            dates = pd.to_datetime(df['timestamp']).dt.date
         else:
-            current_dates = pd.Series(df.index)
+            dates = pd.Series([date(2020, 1, 1)] * len(df))
         
-        df['days_to_earnings'] = (df['earnings_date'] - current_dates).dt.days
-        df['days_to_earnings'] = df['days_to_earnings'].fillna(90).clip(0, 90).astype(int)
+        # Calculate for each row
+        days_to_event = []
+        event_types = []
         
-        # Binary features
-        df['is_earnings_week'] = (df['days_to_earnings'] <= 7).astype(int)
-        df['is_earnings_month'] = (df['days_to_earnings'] <= 30).astype(int)
+        for current_date in dates:
+            days, event_type = self._find_next_event(current_date, symbol)
+            days_to_event.append(days)
+            event_types.append(event_type or 'NONE')
         
-        # Post-earnings indicator (for IV crush detection)
-        # We approximate this: if days_to_earnings just jumped from low to high
-        df['earnings_iv_boost'] = 1.0
-        df.loc[df['days_to_earnings'] <= 7, 'earnings_iv_boost'] = 1.5
-        df.loc[df['days_to_earnings'] <= 3, 'earnings_iv_boost'] = 2.0
-        df.loc[df['days_to_earnings'] <= 1, 'earnings_iv_boost'] = 2.5
+        df['days_to_major_event'] = days_to_event
+        df['major_event_type'] = event_types
+        df['is_event_week'] = (df['days_to_major_event'] <= 7).astype(int)
+        df['is_event_day'] = (df['days_to_major_event'] <= 1).astype(int)
+        
+        # IV boost based on proximity to event
+        df['event_iv_boost'] = 1.0
+        df.loc[df['days_to_major_event'] <= 7, 'event_iv_boost'] = 1.3
+        df.loc[df['days_to_major_event'] <= 3, 'event_iv_boost'] = 1.5
+        df.loc[df['days_to_major_event'] <= 1, 'event_iv_boost'] = 2.0
+        
+        # Post-event (potential vol crush)
+        # Note: This is harder to calculate without knowing if event passed
+        
+        # Remove old earnings columns if they exist
+        old_cols = ['earnings_date', 'days_to_earnings', 'is_earnings_week', 
+                    'is_earnings_month', 'earnings_iv_boost']
+        df = df.drop(columns=[c for c in old_cols if c in df.columns], errors='ignore')
         
         # Save
         df.to_parquet(filepath, index=False)
-        logger.info(f"  ✅ Added earnings features to {filepath}")
+        logger.info(f"  ✅ {symbol}: Added major event features (next: {event_types[0] if event_types else 'NONE'})")
         
         return df
     
     def calculate_all(self, symbols: Optional[List[str]] = None) -> Dict[str, bool]:
-        """Add earnings features to all symbols."""
+        """Add major event features to all symbols."""
         if symbols is None:
             symbols = [
                 f.stem.replace('_1day', '')
@@ -173,25 +222,25 @@ class EarningsDataFetcher:
                 logger.error(f"Error with {symbol}: {e}")
                 results[symbol] = False
         
-        logger.info(f"✅ Earnings features added: {sum(results.values())}/{len(results)}")
+        logger.info(f"✅ Major events added: {sum(results.values())}/{len(results)}")
         return results
 
 
 # Singleton
-_fetcher: Optional[EarningsDataFetcher] = None
+_calculator: Optional[MajorEventsCalculator] = None
 
 
-def get_earnings_data_fetcher() -> EarningsDataFetcher:
-    """Get or create earnings data fetcher."""
-    global _fetcher
-    if _fetcher is None:
-        _fetcher = EarningsDataFetcher()
-    return _fetcher
+def get_major_events_calculator() -> MajorEventsCalculator:
+    """Get or create major events calculator."""
+    global _calculator
+    if _calculator is None:
+        _calculator = MajorEventsCalculator()
+    return _calculator
 
 
 if __name__ == "__main__":
     from core.logger import setup_logger
     setup_logger(level="INFO")
     
-    fetcher = get_earnings_data_fetcher()
-    fetcher.calculate_all()
+    calc = get_major_events_calculator()
+    calc.calculate_all()
