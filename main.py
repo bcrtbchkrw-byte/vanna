@@ -102,8 +102,16 @@ async def analyze_market(market_data, regime_classifier, strategy_selector, logg
     
     try:
         vix = market_data.get('vix', 18.0)
+        if vix is None:
+            vix = 18.0  # Fallback for market closed
+        
         spy_data = market_data.get('SPY', {})
-        current_price = spy_data.get('price', 500.0)
+        current_price = spy_data.get('price')
+        
+        # Handle None price (market closed / no data)
+        if current_price is None or current_price == 0:
+            current_price = 500.0  # Fallback SPY price
+            logger.debug("Using fallback SPY price (market closed or no data)")
         
         # Classify VIX level
         if vix < 15:
