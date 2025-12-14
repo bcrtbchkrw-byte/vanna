@@ -29,8 +29,16 @@ class DailyFeatureCalculator:
     - price_vs_sma200 (ratio)
     """
     
-    def __init__(self, data_dir: str = "data/vanna_ml"):
         self.data_dir = Path(data_dir)
+        
+        # Initialize earnings fetcher
+        try:
+            from ml.yahoo_earnings import get_yahoo_earnings_fetcher
+            self.earnings_fetcher = get_yahoo_earnings_fetcher()
+        except ImportError:
+            self.earnings_fetcher = None
+            logger.warning("YahooEarningsFetcher not available, earnings features will be placeholders")
+
         logger.info(f"DailyFeatureCalculator initialized (dir: {self.data_dir})")
     
     def calculate_for_symbol(self, symbol: str) -> Optional[pd.DataFrame]:
@@ -117,7 +125,80 @@ class DailyFeatureCalculator:
         df['above_sma50'] = (df['close'] > df['sma_50']).astype(int)
         
         # Golden/Death cross signals
+        # Golden/Death cross signals
         df['sma_50_200_ratio'] = df['sma_50'] / df['sma_200']
+        
+        # ================================================================
+        # 7. Earnings / Major Events
+        # ================================================================
+        # Default values
+        df['days_to_major_event'] = 45
+        df['is_event_week'] = 0
+        df['is_event_day'] = 0
+        df['event_iv_boost'] = 1.0
+        
+        if self.earnings_fetcher:
+            # Get next earnings date (REAL)
+            next_earnings = self.earnings_fetcher.get_next_earnings(symbol)
+            
+            if next_earnings:
+                # Calculate for latest data point (most important for live trading)
+                last_date = df['trade_date'].iloc[-1] if 'trade_date' in df.columns else None
+                # If no trade_date col, try to derive from index or timestamp
+                if last_date is None and 'timestamp' in df.columns:
+                     last_date = df['timestamp'].iloc[-1].date()
+
+                if last_date:
+                    days = (next_earnings - last_date).days
+                    # Update last row features
+                    df.loc[df.index[-1], 'days_to_major_event'] = max(0, days)
+                    df.loc[df.index[-1], 'is_event_week'] = 1 if 0 <= days <= 7 else 0
+                    df.loc[df.index[-1], 'is_event_day'] = 1 if days == 0 else 0
+                    
+                    # Simple decay for historical backfill (approximate previous quarters)
+                    # We assume earnings every ~90 days
+                    # This creates a sawtooth pattern 90 -> 0 -> 90 -> 0 which is good enough for RL training on history
+                    # to learn "cycles", even if dates aren't perfect historically.
+                    
+                    # Vectorized sawtooth wave for history
+                    n = len(df)
+                    # Create a decaying sawtooth from 90 down to 0
+                    # Offset so the last value matches the 'real' days to earnings
+                    offset = (days % 90)
+                    # Create sequence: ... 90, 89, ..., 0, 90, 89 ...
+                    # We use negative index to look back from the known future date
+                    idx = np.arange(n)
+                    # Cycle is approx 63 trading days (quarter)
+                    cycle_len = 63 
+                    
+                    # Pattern: Days decreases by 1 each day until event, then resets
+                    # We reconstruct past "days to earnings" by projecting backwards
+                    
+                    # Linear projection: days_historical = (days_real + (n - 1 - i)) % 90
+                    # But accurate "days" should be trading days approx.
+                    
+                    days_array = (days + (n - 1 - idx)) % 91 # Modulo 91 to wrap 90->0
+                    
+                    df['days_to_major_event'] = days_array.astype(int)
+                    df['is_event_week'] = (df['days_to_major_event'] <= 5).astype(int)
+                    df['is_event_day'] = (df['days_to_major_event'] == 0).astype(int)
+                    
+                    # IV Boost (simulated): Higher close to earnings
+                    # 1.0 baseline, up to 1.5 near event
+                    df['event_iv_boost'] = 1.0 + (0.5 * np.exp(-df['days_to_major_event'] / 5))
+            
+            else:
+                # If no earnings date found (e.g. ETF), check for FOMC logic override
+                if symbol in ['SPY', 'QQQ', 'IWM', 'TLT', 'GLD']:
+                    # ETFs don't have earnings, they have FOMC/CPI
+                    # We simulate a monthly cycle (CPI) + 6-week cycle (FOMC) mix
+                    # Just a 30-day cycle for "Macro Event"
+                    n = len(df)
+                    idx = np.arange(n)
+                    days_array = idx % 22 # 22 trading days ~ 1 month
+                    df['days_to_major_event'] = days_array.astype(int)
+                    df['is_event_week'] = 0 # ETFs less binary than stocks
+                    df['event_iv_boost'] = 1.0 # Less vol crush for ETFs
         
         n_after = len(df.columns)
         logger.info(f"  {symbol}: Added {n_after - n_before} daily features ({n_after} total)")
