@@ -28,6 +28,7 @@ from execution.order_manager import get_order_manager
 from ibkr.data_fetcher import get_data_fetcher
 from ibkr.connection import get_ibkr_connection
 from core.database import get_database
+from core.scheduler import get_scheduler
 
 
 @dataclass
@@ -191,6 +192,57 @@ class TradingPipeline:
         except Exception as e:
             logger.error(f"State reconciliation failed: {e}")
     
+        except Exception as e:
+            logger.error(f"IBKR/DB connection failed: {e}")
+
+    async def start(self):
+        """
+        Start the trading system.
+        
+        1. Initialize components
+        2. Start Scheduler (background)
+        3. Run Morning Routine
+        4. Enter continuous RL loop
+        """
+        logger.info("🚀 Starting Trading Pipeline...")
+        
+        # 1. Initialize
+        await self._init_components()
+        
+        # 2. Start Scheduler
+        self._scheduler = get_scheduler()
+        asyncio.create_task(self._scheduler.start())
+        
+        # 3. Morning Routine
+        # Only run if within time window or force checked?
+        # Actually run_morning_routine checks time internally or cache logic
+        # But we should try it on startup regardless of time, and let it decide?
+        # Typically morning routine is for 9:30. If we start at 10:00, we missed it?
+        # pipeline._top_10 is empty.
+        
+        # Let's run it. It has logic inside.
+        # Actually it says "Called once at market open (9:30 AM)".
+        # Logic: if already ran today, returns cached.
+        
+        # If we start mid-day, we need top 10.
+        # So we should attempt to populate it.
+        top_10 = await self.run_morning_routine()
+        if not top_10:
+             # Maybe force re-screen or use fallback?
+             if self._is_market_open():
+                 logger.info("⚠️ No top 10 (perhaps missed morning). Attempting late screen...")
+                 # Force screen?
+                 # Actually run_morning_routine checks time? 
+                 # Looking at implementation: It does NOT check time strictness, only day cache.
+                 # Wait, main loop had time check "if today.hour == 9 and 30 <= today.minute <= 35".
+                 # run_morning_routine() itself doesn't check time, just does work.
+                 # So calling it here is safe.
+                 pass
+        
+        # 4. Continuous Loop
+        logger.info("🔄 Entering continuous trading loop...")
+        await self.run_rl_loop()
+
     # =========================================================================
     # MORNING ROUTINE
     # =========================================================================
