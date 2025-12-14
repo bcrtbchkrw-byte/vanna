@@ -31,6 +31,16 @@ from core.database import get_database
 from core.scheduler import get_scheduler
 from risk.portfolio_manager import get_portfolio_manager
 
+# Lazy component imports to avoid circular deps if needed, 
+# but generally better to fix structure.
+# Checking dependencies: 
+# vanna_data_pipeline -> [logger, ibkr, ml.calc] (No TradingPipeline)
+# daily_feature_calculator -> [pandas, numpy] (No TradingPipeline)
+from ml.vanna_data_pipeline import get_vanna_pipeline
+from ml.daily_feature_calculator import get_daily_feature_calculator
+
+import pandas_market_calendars as mcal
+
 
 @dataclass
 class TradeSignal:
@@ -93,6 +103,9 @@ class TradingPipeline:
         self._refresh_interval_minutes: int = 30  # Re-evaluate Top 10 every 30 min
         self._last_refresh_time: Optional[datetime] = None
         self._min_stock_probability: float = 0.4  # Replace if prob drops below this
+        
+        # Market Calendar
+        self._nyse = mcal.get_calendar('NYSE')
         
         logger.info("TradingPipeline initialized")
     
@@ -403,7 +416,14 @@ class TradingPipeline:
                         else:
                             logger.info(f"❌ Gemini rejected: {decision.gemini_reason}")
                 
-                await asyncio.sleep(self._rl_interval_seconds)
+                # Anti-drift sleep
+                elapsed = (datetime.now() - now).total_seconds()
+                sleep_time = max(1.0, self._rl_interval_seconds - elapsed)
+                
+                # Update 'now' reference for next loop? 
+                # Actually, simple elapsed subtract is enough for interval stability.
+                logger.debug(f"Loop took {elapsed:.2f}s, sleeping {sleep_time:.2f}s")
+                await asyncio.sleep(sleep_time)
                 
             except Exception as e:
                 logger.error(f"RL loop error: {e}")
@@ -557,11 +577,6 @@ class TradingPipeline:
         }
         
         try:
-            from ml.vanna_data_pipeline import get_vanna_pipeline
-            from ml.daily_feature_calculator import get_daily_feature_calculator
-            import pandas as pd
-            import numpy as np
-            
             pipeline = get_vanna_pipeline()
             # Fetch enough history for 200 SMA + some buffer
             df = pipeline.get_training_data([symbol], timeframe='1day')
@@ -978,20 +993,44 @@ Then a brief reason on the next line.
     # =========================================================================
     
     def _is_market_open(self) -> bool:
-        """Check if US stock market is currently open (NYSE/NASDAQ hours)."""
-        # CRITICAL: Use Eastern Time, not local time!
+        """
+        Check if US stock market is currently open (NYSE/NASDAQ hours).
+        Uses pandas_market_calendars to handle holidays and early closes.
+        """
+        try:
+            # Use Eastern Time
+            ET = ZoneInfo("America/New_York")
+            now_et = datetime.now(ET)
+            
+            # Check calendar schedule for today
+            date_today = now_et.date()
+            schedule = self._nyse.schedule(start_date=date_today, end_date=date_today)
+            
+            if schedule.empty:
+                return False # Market closed (Weekend/Holiday)
+                
+            # Get open/close times for today (localized to UTC, convert to ET)
+            # pandas_market_calendars schedule is usually UTC
+            market_open = schedule.iloc[0]['market_open'].to_pydatetime()
+            market_close = schedule.iloc[0]['market_close'].to_pydatetime()
+            
+            # Compare UTC times (now_et needs converting to UTC or compare localized)
+            now_utc = datetime.now(ZoneInfo("UTC"))
+            
+            # Safety margin (e.g. stop 5 mins before close?)
+            return market_open <= now_utc <= market_close
+            
+        except Exception as e:
+            logger.error(f"Market hours check failed: {e}")
+            # Fallback to simple check
+            return self._fallback_market_check()
+
+    def _fallback_market_check(self) -> bool:
+        """Simple fallback 9:30-16:00 ET Mon-Fri."""
         ET = ZoneInfo("America/New_York")
         now_et = datetime.now(ET)
-        
-        # Weekend check
-        if now_et.weekday() >= 5:
-            return False
-        
-        # Market hours: 9:30 AM - 4:00 PM ET
-        market_open = time(9, 30)
-        market_close = time(16, 0)
-        
-        return market_open <= now_et.time() <= market_close
+        if now_et.weekday() >= 5: return False
+        return time(9, 30) <= now_et.time() <= time(16, 0)
     
     def get_status(self) -> Dict[str, Any]:
         """Get current pipeline status."""
