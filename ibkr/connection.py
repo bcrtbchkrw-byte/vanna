@@ -153,7 +153,11 @@ class IBKRConnection:
     def _on_error(self, reqId: int, errorCode: int, errorString: str, contract) -> None:
         """Handle error events."""
         # Ignore non-critical errors
-        if errorCode in [2104, 2106, 2158]:  # Market data farm messages
+        ignored_codes = [
+            2104, 2106, 2158,  # Market data farm messages
+            10276,  # News feed not allowed (account limitation, not error)
+        ]
+        if errorCode in ignored_codes:
             return
         
         if errorCode >= 2000:  # Warnings
