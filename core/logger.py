@@ -2,18 +2,47 @@
 Vanna Logger Module
 
 Configures loguru for structured logging.
-IMPORTANT: Logger is NOT auto-initialized. Call setup_logger() explicitly.
+Auto-initializes in subprocesses to avoid "Logger not initialized" warnings.
 """
 
 import sys
+import os
 from pathlib import Path
 
 from loguru import logger
 
-# Remove default handler
-logger.remove()
-
+# Track if we've set up in this process
 _logger_initialized = False
+_process_id = None
+
+
+def _ensure_minimal_logger():
+    """Ensure at least a minimal logger is configured (for subprocesses)."""
+    global _logger_initialized, _process_id
+    
+    current_pid = os.getpid()
+    
+    # If we're in a new process (multiprocessing), reset state
+    if _process_id is not None and _process_id != current_pid:
+        _logger_initialized = False
+    
+    _process_id = current_pid
+    
+    if not _logger_initialized:
+        # Remove any default handlers
+        try:
+            logger.remove()
+        except ValueError:
+            pass  # Already removed
+        
+        # Add minimal console handler
+        logger.add(
+            sys.stderr,
+            level="INFO",
+            format="{time:HH:mm:ss} | {level: <8} | {message}",
+            enqueue=True,  # Thread-safe for multiprocessing
+        )
+        _logger_initialized = True
 
 
 def setup_logger(
@@ -36,10 +65,19 @@ def setup_logger(
         logger = get_logger()
         logger.info("Application started")
     """
-    global _logger_initialized
+    global _logger_initialized, _process_id
     
-    if _logger_initialized:
+    current_pid = os.getpid()
+    
+    # Skip if already initialized in this process with full config
+    if _logger_initialized and _process_id == current_pid:
         return
+    
+    # Remove any existing handlers
+    try:
+        logger.remove()
+    except ValueError:
+        pass
     
     # Create log directory
     log_path = Path(log_dir)
@@ -54,6 +92,7 @@ def setup_logger(
                "<cyan>{name}</cyan>:<cyan>{function}</cyan> - "
                "<level>{message}</level>",
         colorize=True,
+        enqueue=True,  # Thread-safe
     )
     
     # Main log file
@@ -64,6 +103,7 @@ def setup_logger(
         rotation=rotation,
         retention="7 days",
         compression="gz",
+        enqueue=True,
     )
     
     # Error log file
@@ -73,6 +113,7 @@ def setup_logger(
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function} - {message}",
         rotation=rotation,
         retention="30 days",
+        enqueue=True,
     )
     
     # Trade execution log
@@ -83,9 +124,11 @@ def setup_logger(
         filter=lambda record: "TRADE" in record["message"],
         rotation=rotation,
         retention="90 days",
+        enqueue=True,
     )
     
     _logger_initialized = True
+    _process_id = current_pid
     logger.info("Logger initialized successfully")
 
 
@@ -97,17 +140,7 @@ def get_logger():
         loguru.Logger: The configured logger
     
     Note:
-        If logger is not initialized, a minimal console handler is added.
+        Auto-initializes with minimal config in subprocesses.
     """
-    global _logger_initialized
-    
-    if not _logger_initialized:
-        # Auto-init with minimal config (just console)
-        logger.add(
-            sys.stderr, 
-            level="INFO", 
-            format="{time:HH:mm:ss} | {level: <8} | {message}"
-        )
-        _logger_initialized = True
-    
+    _ensure_minimal_logger()
     return logger
