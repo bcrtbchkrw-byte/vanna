@@ -264,7 +264,8 @@ class TradingPipeline:
         
         # If we start mid-day, we need top 10.
         # So we should attempt to populate it.
-        top_10 = await self.run_morning_routine()
+        # USER REQUEST: Force download at startup even if market closed ("data se musi stahnout").
+        top_10 = await self.run_morning_routine(force=True)
         if not top_10:
              # Maybe force re-screen or use fallback?
              if self._is_market_open():
@@ -285,31 +286,34 @@ class TradingPipeline:
     # MORNING ROUTINE
     # =========================================================================
     
-    async def run_morning_routine(self) -> List[str]:
+    async def run_morning_routine(self, force: bool = False) -> List[str]:
         """
         Run morning screening and ML filtering.
         
         Called once at market open (9:30 AM).
+        
+        Args:
+            force: If True, bypass cache and time checks (download IMMEDIATELY).
         
         Returns:
             Top 10 stocks for RL to monitor
         """
         today = date.today()
         
-        # Check if already ran today
-        if self._last_screen_date == today and self._top_10:
+        # Check if already ran today (unless forced)
+        if not force and self._last_screen_date == today and self._top_10:
             logger.info(f"Using cached Top 10 from {today}")
             return self._top_10
         
         logger.info("=" * 70)
-        logger.info("🌅 MORNING ROUTINE - Starting")
+        logger.info(f"🌅 MORNING ROUTINE - Starting (Force={force})")
         logger.info("=" * 70)
         
         await self._init_components()
         
         # Step 1: Screener → Top 50
         logger.info("\n📊 Step 1: Screener (402 → 50)")
-        self._top_50 = await self._screener.run_morning_screen()
+        self._top_50 = await self._screener.run_morning_screen(force=force)
         logger.info(f"   Screener selected: {len(self._top_50)} stocks")
         
         if len(self._top_50) < 10:
