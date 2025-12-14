@@ -41,7 +41,11 @@ class VannaDataPipeline:
     - Live: Every minute during market hours
     """
     
-    SYMBOLS = ['SPY', 'QQQ', 'IWM', 'GLD', 'TLT']
+    SYMBOLS = [
+        'SPY', 'QQQ', 'IWM', 'GLD', 'TLT',  # Core ETFs
+        'AAPL', 'AMD', 'TSLA',              # User requested
+        'NVDA', 'MSFT', 'AMZN', 'COIN'      # High Volatility / Crypto Proxy
+    ]
     VIX_SYMBOLS = ['VIX', 'VIX3M']
     
     # IBKR limits
