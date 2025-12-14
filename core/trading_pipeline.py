@@ -139,8 +139,31 @@ class TradingPipeline:
             db_trades = await self._db.get_open_trades()
             db_map = {t['symbol']: t for t in db_trades}
             
-            # 2. Get IBKR positions
+            # 2. Get IBKR positions with Safety Check
             ib_positions = self._ibkr.get_positions()
+            
+            # SAFETY: If DB has trades but IBKR returns ZERO, it might be a glitch.
+            # We verify connection health by checking NetLiquidation.
+            if len(db_trades) > 0 and len(ib_positions) == 0:
+                logger.warning("⚠️ Mismatch: DB has trades but IBKR returns 0 positions. Verifying...")
+                
+                # Check connection health explicitly
+                try:
+                    summary = await self._ibkr.get_account_summary()
+                    net_liq = float(summary.get('NetLiquidation', 0))
+                    if net_liq <= 0:
+                         logger.error("❌ Safety Stop: NetLiquidation is 0 or unreadable. IBKR data feed likely down. Aborting reconciliation.")
+                         return
+                except Exception as e:
+                     logger.error(f"❌ Safety Stop: Could not verify account summary. Aborting reconciliation. Error: {e}")
+                     return
+                
+                # Force refresh positions
+                await asyncio.sleep(2.0)
+                ib_positions = self._ibkr.get_positions()
+                if len(ib_positions) == 0:
+                     logger.warning("⚠️ Confirmed 0 positions in IBKR after verify. Proceeding to close DB trades.")
+
             ib_map = {p.contract.symbol: p for p in ib_positions if p.position != 0}
             
             # 3. Reconcile
