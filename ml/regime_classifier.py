@@ -136,8 +136,9 @@ class RegimeClassifier:
             return self.classify_by_vix(vix)
         
         try:
-            # Prepare features
-            X = np.array([[features.get(f, 0) for f in self.FEATURES]])
+            # Prepare features as DataFrame with column names (avoids sklearn warning)
+            feature_values = [[features.get(f, 0) for f in self.FEATURES]]
+            X = pd.DataFrame(feature_values, columns=self.FEATURES)
             
             if self.scaler:
                 X = self.scaler.transform(X)
