@@ -389,6 +389,91 @@ class TradingPipeline:
             logger.debug(f"RL eval failed for {symbol}: {e}")
             return None
     
+    async def _calculate_technical_features(self, symbol: str, current_price: float) -> Dict[str, float]:
+        """
+        Calculate daily technical features (SMA, RSI, MACD, etc.) from historical data.
+        Returns a dict matching the 'Daily features' section of TradingEnv.
+        """
+        defaults = {
+            'day_sma_200': 1.0, 'day_sma_50': 1.0, 'day_sma_20': 1.0,
+            'day_price_vs_sma200': 0.0, 'day_price_vs_sma50': 0.0,
+            'day_rsi_14': 50.0, 'day_atr_14': 0.02, 'day_atr_pct': 0.02,
+            'day_bb_position': 0.5, 'day_macd': 0.0, 'day_macd_hist': 0.0,
+            'day_above_sma200': 1, 'day_above_sma50': 1, 'day_sma_50_200_ratio': 1.0
+        }
+        
+        try:
+            from ml.vanna_data_pipeline import get_vanna_pipeline
+            import pandas as pd
+            import numpy as np
+            
+            pipeline = get_vanna_pipeline()
+            df = pipeline.get_training_data([symbol], timeframe='1day')
+            
+            if df is None or len(df) < 50:
+                return defaults
+                
+            df = df.sort_values('timestamp')
+            close = df['close']
+            high = df['high']
+            low = df['low']
+            
+            # 1. SMAs
+            sma_20 = close.rolling(20).mean().iloc[-1]
+            sma_50 = close.rolling(50).mean().iloc[-1]
+            sma_200 = close.rolling(200).mean().iloc[-1] if len(df) >= 200 else sma_50 * 0.95
+            
+            # 2. RSI 14
+            delta = close.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss.replace(0, 1e-9)
+            rsi = 100 - (100 / (1 + rs)).iloc[-1]
+            
+            # 3. ATR 14
+            tr = pd.concat([
+                high - low,
+                (high - close.shift(1)).abs(),
+                (low - close.shift(1)).abs()
+            ], axis=1).max(axis=1)
+            atr = tr.rolling(14).mean().iloc[-1]
+            
+            # 4. Bollinger Bands (20, 2)
+            std_20 = close.rolling(20).std().iloc[-1]
+            upper = sma_20 + (2 * std_20)
+            lower = sma_20 - (2 * std_20)
+            bb_pos = (current_price - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
+            
+            # 5. MACD (12, 26, 9)
+            ema_12 = close.ewm(span=12, adjust=False).mean()
+            ema_26 = close.ewm(span=26, adjust=False).mean()
+            macd_line = ema_12 - ema_26
+            signal_line = macd_line.ewm(span=9, adjust=False).mean()
+            macd_val = macd_line.iloc[-1]
+            macd_hist = (macd_line - signal_line).iloc[-1]
+            
+            # Normalize
+            return {
+                'day_sma_200': float(sma_200 / current_price), # Normalize to ratio
+                'day_sma_50': float(sma_50 / current_price),
+                'day_sma_20': float(sma_20 / current_price),
+                'day_price_vs_sma200': float((current_price / sma_200) - 1),
+                'day_price_vs_sma50': float((current_price / sma_50) - 1),
+                'day_rsi_14': float(rsi / 100.0), # Normalize 0-1
+                'day_atr_14': float(atr),
+                'day_atr_pct': float(atr / current_price),
+                'day_bb_position': float(bb_pos),
+                'day_macd': float(macd_val / current_price), # Normalize by price
+                'day_macd_hist': float(macd_hist / current_price),
+                'day_above_sma200': 1 if current_price > sma_200 else 0,
+                'day_above_sma50': 1 if current_price > sma_50 else 0,
+                'day_sma_50_200_ratio': float(sma_50 / sma_200),
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error calculating technical features: {e}")
+            return defaults
+
     async def _get_live_features(self, symbol: str) -> Optional[Dict[str, float]]:
         """
         Get live features for RL prediction (70 features matching TradingEnv).
@@ -450,6 +535,10 @@ class TradingPipeline:
             vanna = 0.0
             charm = 0.0
             volga = 0.0
+            
+            # Historical Daily Features
+            # =========================
+            daily_features = await self._calculate_technical_features(symbol, price)
             
             # Position features
             has_position = symbol in self._active_positions
@@ -518,21 +607,21 @@ class TradingPipeline:
                 'is_event_week': 0,
                 'is_event_day': 0,
                 'event_iv_boost': 0.0,
-                # Daily features (17) - placeholders (would load from DB)
-                'day_sma_200': 1.0,
-                'day_sma_50': 1.0,
-                'day_sma_20': 1.0,
-                'day_price_vs_sma200': 0.0,
-                'day_price_vs_sma50': 0.0,
-                'day_rsi_14': 50.0,
-                'day_atr_14': 0.02,
-                'day_atr_pct': 0.02,
-                'day_bb_position': 0.5,
-                'day_macd': 0.0,
-                'day_macd_hist': 0.0,
-                'day_above_sma200': 1,
-                'day_above_sma50': 1,
-                'day_sma_50_200_ratio': 1.0,
+                # Daily features (17) - Real values
+                'day_sma_200': daily_features['day_sma_200'],
+                'day_sma_50': daily_features['day_sma_50'],
+                'day_sma_20': daily_features['day_sma_20'],
+                'day_price_vs_sma200': daily_features['day_price_vs_sma200'],
+                'day_price_vs_sma50': daily_features['day_price_vs_sma50'],
+                'day_rsi_14': daily_features['day_rsi_14'],
+                'day_atr_14': daily_features['day_atr_14'],
+                'day_atr_pct': daily_features['day_atr_pct'],
+                'day_bb_position': daily_features['day_bb_position'],
+                'day_macd': daily_features['day_macd'],
+                'day_macd_hist': daily_features['day_macd_hist'],
+                'day_above_sma200': daily_features['day_above_sma200'],
+                'day_above_sma50': daily_features['day_above_sma50'],
+                'day_sma_50_200_ratio': daily_features['day_sma_50_200_ratio'],
                 'day_days_to_major_event': 7,
                 'day_is_event_week': 0,
                 'day_event_iv_boost': 0.0,
