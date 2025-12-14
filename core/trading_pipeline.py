@@ -389,47 +389,66 @@ class TradingPipeline:
     
     async def run_rl_loop(self) -> None:
         """
-        Run RL agent continuously during market hours.
+        Run continuous trading loop.
         
-        Checks Top 10 stocks every minute for trade opportunities.
-        Refreshes Top 10 every 30 minutes to replace underperforming stocks.
+        Persists indefinitely:
+        - Market Open: Runs RL strategy and execution.
+        - Market Closed: Sleeps and waits.
         """
-        logger.info("🔄 Starting RL continuous loop...")
+        logger.info("🔄 Entering persistent trading loop...")
         
-        while self._is_market_open():
+        while True:
             try:
-                # Dynamic refresh: Check if any stock should be replaced
+                # Check Market Status
+                if not self._is_market_open():
+                    # Market Closed behavior
+                    # Just sleep and check again later
+                    # logger.debug("Market closed. Sleeping...")
+                    await asyncio.sleep(60)
+                    continue
+
+                # =========================================
+                # MARKET IS OPEN
+                # =========================================
+                
+                # 0. Loop Timing Start
+                loop_start = datetime.now()
+                
+                # 1. Morning Routine (Idempotent check inside)
+                await self.run_morning_routine()
+                
+                # 2. Dynamic Refresh
                 await self._maybe_refresh_top_10()
                 
+                # 3. RL Evaluation
                 for symbol in self._top_10:
                     signal = await self._rl_evaluate(symbol)
                     
                     if signal and signal.action in ['OPEN', 'CLOSE']:
-                        # RL found opportunity!
                         logger.info(f"🎯 RL Signal: {signal.action} {signal.symbol} (conf: {signal.confidence:.1%})")
                         
-                        # Pass to Gemini for final check
                         decision = await self._gemini_check(signal)
                         
                         if decision.gemini_approved:
                             await self._execute_trade(decision)
                         else:
                             logger.info(f"❌ Gemini rejected: {decision.gemini_reason}")
-                
-                # Anti-drift sleep
-                elapsed = (datetime.now() - now).total_seconds()
+
+                # 4. Anti-Drift Sleep
+                elapsed = (datetime.now() - loop_start).total_seconds()
                 sleep_time = max(1.0, self._rl_interval_seconds - elapsed)
                 
-                # Update 'now' reference for next loop? 
-                # Actually, simple elapsed subtract is enough for interval stability.
                 logger.debug(f"Loop took {elapsed:.2f}s, sleeping {sleep_time:.2f}s")
                 await asyncio.sleep(sleep_time)
                 
+            except asyncio.CancelledError:
+                logger.info("🛑 Loop cancelled")
+                break
             except Exception as e:
                 logger.error(f"RL loop error: {e}")
                 await asyncio.sleep(5)
         
-        logger.info("RL loop ended - market closed")
+        logger.info("Loop exited")
     
     async def _maybe_refresh_top_10(self) -> None:
         """
