@@ -14,42 +14,46 @@ def event_loop():
 class TestRegimeClassifier:
     """Test market regime classification."""
     
-    def test_trending_up_regime(self):
-        """Test bullish trending regime detection."""
+    def test_low_volatility_regime(self):
+        """Test low VIX triggers low volatility regime."""
         from ml.regime_classifier import RegimeClassifier
         
         classifier = RegimeClassifier()
         
-        result = classifier.classify_regime(
-            current_price=450,
-            sma_20=445,
-            sma_50=440,
-            sma_200=420,
-            vix=18,
-            historical_volatility=0.15
-        )
+        result = classifier.classify({
+            'vix': 12,  # Low VIX
+            'vix_ratio': 0.9,
+            'vix_change_1d': -0.5,
+            'vix_zscore': -1.0,
+            'return_1m': 0.01,
+            'return_5m': 0.005,
+            'volatility_20': 0.12,
+            'momentum_20': 0.02
+        })
         
-        assert result.regime == RegimeClassifier.REGIME_TRENDING_UP
-        assert result.trend_direction == "BULLISH"
+        assert result.regime == 0  # Low volatility
+        assert result.regime_name == 'low_vol'
         assert result.confidence > 0.6
     
-    def test_trending_down_regime(self):
-        """Test bearish trending regime detection."""
+    def test_normal_regime(self):
+        """Test normal VIX triggers normal regime."""
         from ml.regime_classifier import RegimeClassifier
         
         classifier = RegimeClassifier()
         
-        result = classifier.classify_regime(
-            current_price=400,
-            sma_20=410,
-            sma_50=420,
-            sma_200=440,
-            vix=22,
-            historical_volatility=0.20
-        )
+        result = classifier.classify({
+            'vix': 18,  # Normal VIX
+            'vix_ratio': 1.0,
+            'vix_change_1d': 0.0,
+            'vix_zscore': 0.0,
+            'return_1m': 0.0,
+            'return_5m': 0.0,
+            'volatility_20': 0.18,
+            'momentum_20': 0.0
+        })
         
-        assert result.regime == RegimeClassifier.REGIME_TRENDING_DOWN
-        assert result.trend_direction == "BEARISH"
+        assert result.regime == 1  # Normal
+        assert result.regime_name == 'normal'
     
     def test_high_volatility_regime(self):
         """Test high VIX triggers high volatility regime."""
@@ -57,44 +61,44 @@ class TestRegimeClassifier:
         
         classifier = RegimeClassifier()
         
-        result = classifier.classify_regime(
-            current_price=430,
-            sma_20=430,
-            sma_50=430,
-            sma_200=430,
-            vix=38,  # Panic level
-            historical_volatility=0.35
-        )
+        result = classifier.classify({
+            'vix': 32,  # High VIX
+            'vix_ratio': 1.2,
+            'vix_change_1d': 3.0,
+            'vix_zscore': 2.0,
+            'return_1m': -0.05,
+            'return_5m': -0.02,
+            'volatility_20': 0.32,
+            'momentum_20': -0.05
+        })
         
-        assert result.regime == RegimeClassifier.REGIME_HIGH_VOL
-        assert result.vix_level == 38
+        assert result.regime == 3  # High volatility
+        assert result.regime_name == 'high_vol'
     
-    def test_range_bound_regime(self):
-        """Test sideways market detection."""
+    def test_crisis_regime(self):
+        """Test very high VIX triggers crisis regime."""
         from ml.regime_classifier import RegimeClassifier
         
         classifier = RegimeClassifier()
         
-        result = classifier.classify_regime(
-            current_price=430,
-            sma_20=429,
-            sma_50=431,
-            sma_200=428,
-            vix=15,
-            historical_volatility=0.12
-        )
+        result = classifier.classify({'vix': 40})  # Crisis VIX
         
-        assert result.regime == RegimeClassifier.REGIME_RANGE_BOUND
+        assert result.regime == 4  # Crisis
+        assert result.regime_name == 'crisis'
     
-    def test_strategy_weights(self):
-        """Test strategy weight recommendations."""
+    def test_strategy_adjustments(self):
+        """Test strategy adjustment recommendations."""
         from ml.regime_classifier import get_regime_classifier
         
         classifier = get_regime_classifier()
         
-        # Iron condor should be favored in range-bound
-        weights = classifier.get_strategy_weights("RANGE_BOUND")
-        assert weights["iron_condor"] > weights["credit_spread"]
+        # High vol should reduce position size
+        adj = classifier.get_strategy_adjustment(3)  # High vol
+        assert adj['position_size'] < 1.0
+        
+        # Low vol can increase position size
+        adj = classifier.get_strategy_adjustment(0)  # Low vol
+        assert adj['position_size'] >= 1.0
 
 
 class TestNeuralGatekeeper:

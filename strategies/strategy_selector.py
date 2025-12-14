@@ -79,18 +79,21 @@ class StrategySelector:
         Returns:
             List of strategy recommendations with weights
         """
-        # Classify current regime
-        regime_state = self._regime_classifier.classify_regime(
-            current_price=current_price,
-            sma_20=sma_20,
-            sma_50=sma_50,
-            sma_200=sma_200,
-            vix=vix,
-            historical_volatility=0.0  # Will use VIX as proxy
-        )
+        # Classify current regime using VIX-based classification
+        features = {
+            'vix': vix,
+            'vix_ratio': 1.0,  # Placeholder
+            'vix_change_1d': 0.0,
+            'vix_zscore': 0.0,
+            'return_1m': 0.0,
+            'return_5m': 0.0,
+            'volatility_20': vix / 100,  # Approximate
+            'momentum_20': (current_price - sma_20) / sma_20 if sma_20 > 0 else 0
+        }
+        regime_state = self._regime_classifier.classify(features)
         
         regime = regime_state.regime
-        self.logger.info(f"Current regime: {regime} (confidence: {regime_state.confidence:.0%})")
+        self.logger.info(f"Current regime: {regime_state.regime_name} (confidence: {regime_state.confidence:.0%})")
         
         # Get strategies for this regime
         strategies = self.REGIME_STRATEGIES.get(regime, ["BULL_PUT_SPREAD"])
