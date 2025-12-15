@@ -191,7 +191,7 @@ class DailyOptionsScreener:
         et = pytz.timezone('US/Eastern')
         now_et = datetime.now(et)
         
-        if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
+        if not force and now_et.weekday() >= 5:  # Saturday=5, Sunday=6
             logger.info(f"⏸️ Weekend - skipping screening (day={now_et.strftime('%A')})")
             return self._today_watchlist if self._today_watchlist else []
         

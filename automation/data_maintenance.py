@@ -35,7 +35,10 @@ class DataMaintenanceManager:
     - Global lock to prevent concurrent downloads
     """
     
-    SYMBOLS = ['SPY', 'QQQ', 'IWM', 'GLD', 'TLT']
+    # IMPORTANT: Use VannaDataPipeline.SYMBOLS as Single Source of Truth
+    # Do NOT define symbols here - they are defined in ml/vanna_data_pipeline.py
+    from ml.vanna_data_pipeline import VannaDataPipeline
+    SYMBOLS = VannaDataPipeline.SYMBOLS
     MAX_GAP_MINUTES = 1  # Gaps larger than this are flagged
     
     # Global lock to prevent double downloads

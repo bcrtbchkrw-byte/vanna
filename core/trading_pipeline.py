@@ -247,9 +247,82 @@ class TradingPipeline:
         # 1. Initialize
         await self._init_components()
         
-        # 2. Start Scheduler
+        # 2. Startup Maintenance (Data Update + Retrain) - User Forced
+        await self._run_startup_maintenance()
+
+        # 3. Start Scheduler
         self._scheduler = get_scheduler()
         asyncio.create_task(self._scheduler.start())
+
+    async def _run_startup_maintenance(self) -> None:
+        """
+        Force update of historical data and retraining at startup.
+        Requested by user to ensure data is always fresh.
+        """
+        logger.info("=" * 70)
+        logger.info("🛠️ STARTUP MAINTENANCE - Updating Data & Retraining")
+        logger.info("   (This process may take 10-20 minutes)")
+        logger.info("=" * 70)
+        
+        try:
+            # 1. Check for Existing Data (Strict Symbol Check)
+            from pathlib import Path
+            from ml.vanna_data_pipeline import VannaDataPipeline
+            
+            data_dir = Path("data/vanna_ml")
+            required_symbols = VannaDataPipeline.SYMBOLS
+            
+            missing_files = []
+            for symbol in required_symbols:
+                if not (data_dir / f"{symbol}_1min.parquet").exists():
+                    missing_files.append(f"{symbol}_1min")
+                if not (data_dir / f"{symbol}_1day.parquet").exists():
+                    missing_files.append(f"{symbol}_1day")
+
+            if not missing_files:
+                logger.info(f"✅ Found all datasets for {len(required_symbols)} symbols (1min + 1day)")
+                logger.info("⏩ Skipping startup data download & retraining.")
+                logger.info("   To force update, run 'python3 run_weekend_update.py'")
+                logger.info("=" * 70)
+                return
+            
+            logger.warning(f"⚠️ Missing datasets: {missing_files[:5]}... (Total {len(missing_files)} missing)")
+
+            # 2. Update Data (If missing)
+            logger.info("⬇️ Downloading Historical Data (550 days + 10 years)...")
+            from ml.vanna_data_pipeline import get_vanna_pipeline
+            pipeline = get_vanna_pipeline()
+            
+            # Ensure connection
+            conn = await pipeline._get_connection()
+            if not conn.is_connected:
+                await conn.connect()
+                await asyncio.sleep(2)
+            
+            if conn.is_connected:
+                await pipeline.fetch_all_historical(days=550, years=10)
+                logger.info("✅ Data download complete")
+            else:
+                logger.warning("⚠️ Could not connect to IBKR for data update. Skipping.")
+            
+            # 2. Retrain Model
+            logger.info("🧠 Retraining RL Model...")
+            from rl.ppo_agent import get_trading_agent, get_available_symbols
+            symbols = get_available_symbols()
+            
+            if symbols:
+                agent = get_trading_agent()
+                agent.create_env(symbols=symbols)
+                agent.train(total_timesteps=100_000)
+                logger.info("✅ Model retraining complete")
+            else:
+                logger.warning("⚠️ No data found for training. Skipping.")
+                
+        except Exception as e:
+            logger.error(f"❌ Startup maintenance failed: {e}")
+            logger.info("   Continuing with existing model/data...")
+            
+        logger.info("=" * 70)
         
         # 3. Morning Routine
         # Only run if within time window or force checked?

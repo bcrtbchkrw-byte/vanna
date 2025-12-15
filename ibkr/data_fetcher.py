@@ -70,20 +70,26 @@ class IBKRDataFetcher:
             ticker = conn.ib.reqMktData(contract, '', False, False)
             await asyncio.sleep(self._data_timeout)  # Configurable timeout
             
+            # Fallback to close if last is missing (common on weekends/ah)
+            last_price = ticker.last if (ticker.last and ticker.last > 0) else ticker.close
+            
             quote = {
                 "symbol": symbol,
-                "bid": ticker.bid if ticker.bid > 0 else None,
-                "ask": ticker.ask if ticker.ask > 0 else None,
-                "last": ticker.last if ticker.last > 0 else None,
+                "bid": ticker.bid if (ticker.bid and ticker.bid > 0) else None,
+                "ask": ticker.ask if (ticker.ask and ticker.ask > 0) else None,
+                "last": last_price if (last_price and last_price > 0) else None,
                 "volume": ticker.volume if ticker.volume else 0,
-                "high": ticker.high if ticker.high > 0 else None,
-                "low": ticker.low if ticker.low > 0 else None,
-                "close": ticker.close if ticker.close > 0 else None,
+                "high": ticker.high if (ticker.high and ticker.high > 0) else None,
+                "low": ticker.low if (ticker.low and ticker.low > 0) else None,
+                "close": ticker.close if (ticker.close and ticker.close > 0) else None,
                 "timestamp": datetime.now()
             }
             
             conn.ib.cancelMktData(contract)
-            logger.info(f"📊 {symbol}: Last=${quote['last']}, Bid=${quote['bid']}, Ask=${quote['ask']}")
+            
+            # Log with context
+            price_src = "Last" if ticker.last and ticker.last > 0 else "Close"
+            logger.info(f"📊 {symbol}: {price_src}=${quote['last'] or '?'}, Bid=${quote['bid'] or '?'}, Ask=${quote['ask'] or '?'}")
             
             return quote
             
