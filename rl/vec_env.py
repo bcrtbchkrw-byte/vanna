@@ -136,31 +136,28 @@ def make_vec_env(
 
 def get_available_symbols(data_dir: str = "data/vanna_ml") -> List[str]:
     """
-    Get list of symbols that have training data available.
+    Get list of symbols that have RL training data (*_1min_rl.parquet).
     
-    Checks for files in order of preference:
-    1. *_1min_rl.parquet (enriched RL data)
-    2. *_1min_vanna.parquet (vanna features)
-    3. *_1min.parquet (raw OHLCV)
+    Only uses enriched RL data files - these are created by the 
+    data pipeline after feature engineering and normalization.
     """
     data_path = Path(data_dir)
     
     if not data_path.exists():
         return []
     
-    # Try patterns in order of preference
-    patterns = ["*_1min_rl.parquet", "*_1min_vanna.parquet", "*_1min.parquet"]
-    suffixes = ["_1min_rl", "_1min_vanna", "_1min"]
+    # Only look for *_1min_rl.parquet files (enriched RL training data)
+    parquet_files = list(data_path.glob("*_1min_rl.parquet"))
     
-    for pattern, suffix in zip(patterns, suffixes):
-        parquet_files = list(data_path.glob(pattern))
-        if parquet_files:
-            symbols = [f.stem.replace(suffix, "") for f in parquet_files]
-            logger.info(f"Found {len(symbols)} symbols ({pattern}): {symbols}")
-            return sorted(symbols)
+    # Extract symbol names
+    symbols = [f.stem.replace("_1min_rl", "") for f in parquet_files]
     
-    logger.warning("No training data found in any format")
-    return []
+    if symbols:
+        logger.info(f"Found {len(symbols)} symbols with RL data: {symbols}")
+    else:
+        logger.warning("No *_rl.parquet files found. Run data pipeline first.")
+    
+    return sorted(symbols)
 
 
 def create_training_env(
