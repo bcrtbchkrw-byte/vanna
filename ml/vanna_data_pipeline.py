@@ -41,12 +41,8 @@ class VannaDataPipeline:
     - Live: Every minute during market hours
     """
     
-    SYMBOLS = [
-        'SPY', 'QQQ', 'IWM', 'GLD', 'TLT',  # Core ETFs
-        'AAPL', 'AMD', 'TSLA',              # User requested
-        'NVDA', 'MSFT', 'AMZN', 'COIN'      # High Volatility / Crypto Proxy
-    ]
-    VIX_SYMBOLS = ['VIX', 'VIX3M']
+    # Import from Single Source of Truth
+    from ml.symbols import TRAINING_SYMBOLS as SYMBOLS, VIX_SYMBOLS
     
     # IBKR limits
     MAX_BARS_PER_REQUEST = 1000  # Safe limit to avoid pacing

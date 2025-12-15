@@ -18,9 +18,8 @@ from rl.trading_env import TradingEnvironment
 logger = get_logger()
 
 
-# Single Source of Truth: import from VannaDataPipeline
-from ml.vanna_data_pipeline import VannaDataPipeline
-DEFAULT_SYMBOLS = VannaDataPipeline.SYMBOLS
+# Single Source of Truth: import from ml.symbols
+from ml.symbols import TRAINING_SYMBOLS as DEFAULT_SYMBOLS
 
 
 def make_env(

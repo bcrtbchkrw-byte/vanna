@@ -267,10 +267,10 @@ class TradingPipeline:
         try:
             # 1. Check for Existing Data (Strict Symbol Check)
             from pathlib import Path
-            from ml.vanna_data_pipeline import VannaDataPipeline
+            from ml.symbols import TRAINING_SYMBOLS
             
             data_dir = Path("data/vanna_ml")
-            required_symbols = VannaDataPipeline.SYMBOLS
+            required_symbols = TRAINING_SYMBOLS
             
             missing_files = []
             for symbol in required_symbols:

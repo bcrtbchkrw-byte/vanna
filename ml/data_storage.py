@@ -25,9 +25,8 @@ class VannaDataStorage:
     - SQLite: Live data, metadata, quick queries
     """
     
-    # Single Source of Truth: import from VannaDataPipeline
-    from ml.vanna_data_pipeline import VannaDataPipeline
-    SYMBOLS = VannaDataPipeline.SYMBOLS
+    # Single Source of Truth: import from ml.symbols
+    from ml.symbols import TRAINING_SYMBOLS as SYMBOLS
     TIMEFRAMES = ['1min', '1day']
     
     def __init__(
