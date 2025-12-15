@@ -135,19 +135,32 @@ def make_vec_env(
 
 
 def get_available_symbols(data_dir: str = "data/vanna_ml") -> List[str]:
-    """Get list of symbols that have *_vanna.parquet files."""
+    """
+    Get list of symbols that have training data available.
+    
+    Checks for files in order of preference:
+    1. *_1min_rl.parquet (enriched RL data)
+    2. *_1min_vanna.parquet (vanna features)
+    3. *_1min.parquet (raw OHLCV)
+    """
     data_path = Path(data_dir)
     
     if not data_path.exists():
         return []
     
-    # Find all *_1min_vanna.parquet files
-    parquet_files = list(data_path.glob("*_1min_vanna.parquet"))
+    # Try patterns in order of preference
+    patterns = ["*_1min_rl.parquet", "*_1min_vanna.parquet", "*_1min.parquet"]
+    suffixes = ["_1min_rl", "_1min_vanna", "_1min"]
     
-    # Extract symbol names
-    symbols = [f.stem.replace("_1min_vanna", "") for f in parquet_files]
+    for pattern, suffix in zip(patterns, suffixes):
+        parquet_files = list(data_path.glob(pattern))
+        if parquet_files:
+            symbols = [f.stem.replace(suffix, "") for f in parquet_files]
+            logger.info(f"Found {len(symbols)} symbols ({pattern}): {symbols}")
+            return sorted(symbols)
     
-    return sorted(symbols)
+    logger.warning("No training data found in any format")
+    return []
 
 
 def create_training_env(
