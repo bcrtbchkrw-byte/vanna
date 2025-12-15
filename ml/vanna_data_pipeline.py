@@ -282,6 +282,53 @@ class VannaDataPipeline:
         
         return df
     
+    async def fetch_vix_daily(
+        self,
+        df: pd.DataFrame
+    ) -> pd.DataFrame:
+        """
+        Add VIX and VIX3M data to daily DataFrame.
+        
+        Args:
+            df: DataFrame with timestamp column (daily data)
+            
+        Returns:
+            DataFrame with VIX columns added
+        """
+        # Fetch daily VIX data
+        vix_df = await self.fetch_historical_daily('VIX', years=10)
+        
+        if vix_df is not None:
+            # Normalize timestamp to date for merging
+            vix_df['date'] = pd.to_datetime(vix_df['timestamp']).dt.date
+            vix_df = vix_df[['date', 'close']].rename(columns={'close': 'vix'})
+            
+            df['date'] = pd.to_datetime(df['timestamp']).dt.date
+            df = df.merge(vix_df, on='date', how='left')
+            df = df.drop(columns=['date'])
+        else:
+            df['vix'] = np.nan
+        
+        # VIX3M
+        vix3m_df = await self.fetch_historical_daily('VIX3M', years=10)
+        
+        if vix3m_df is not None:
+            vix3m_df['date'] = pd.to_datetime(vix3m_df['timestamp']).dt.date
+            vix3m_df = vix3m_df[['date', 'close']].rename(columns={'close': 'vix3m'})
+            
+            df['date'] = pd.to_datetime(df['timestamp']).dt.date
+            df = df.merge(vix3m_df, on='date', how='left')
+            df = df.drop(columns=['date'])
+        else:
+            df['vix3m'] = np.nan
+        
+        # Forward fill missing values
+        df['vix'] = df['vix'].ffill()
+        df['vix3m'] = df['vix3m'].ffill()
+        
+        logger.info(f"Added VIX data to daily DataFrame ({len(df)} rows)")
+        return df
+    
     async def process_historical_data(
         self,
         symbol: str,
@@ -334,9 +381,11 @@ class VannaDataPipeline:
             # Intraday
             await self.process_historical_data(symbol, days, save=True)
             
-            # Daily
+            # Daily (with VIX data for regime classification)
             daily_df = await self.fetch_historical_daily(symbol, years)
             if daily_df is not None:
+                # Add VIX data to daily DataFrame (fixes "No 'vix' column" warning)
+                daily_df = await self.fetch_vix_daily(daily_df)
                 daily_df = self.feature_eng.process_all_features(daily_df)
                 self.storage.save_historical_parquet(daily_df, symbol, '1day')
         

@@ -119,9 +119,11 @@ class DataMaintenanceManager:
                         # Download 550 days of 1-min data
                         await self.pipeline.process_historical_data(symbol, days=550, save=True)
                         
-                        # Download 10 years of daily data
+                        # Download 10 years of daily data (with VIX)
                         daily_df = await self.pipeline.fetch_historical_daily(symbol, years=10)
                         if daily_df is not None:
+                            # Add VIX data for regime classification
+                            daily_df = await self.pipeline.fetch_vix_daily(daily_df)
                             daily_df = self.pipeline.feature_eng.process_all_features(daily_df)
                             self.storage.save_historical_parquet(daily_df, symbol, '1day')
                         
