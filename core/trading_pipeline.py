@@ -38,6 +38,7 @@ from risk.portfolio_manager import get_portfolio_manager
 # daily_feature_calculator -> [pandas, numpy] (No TradingPipeline)
 from ml.vanna_data_pipeline import get_vanna_pipeline
 from ml.daily_feature_calculator import get_daily_feature_calculator
+from ml.live_feature_builder import get_live_feature_builder
 
 import pandas_market_calendars as mcal
 
@@ -83,6 +84,7 @@ class TradingPipeline:
         self._order_manager = None
         self._data_fetcher = None
         self._ibkr = None
+        self._live_feature_builder = None  # For consistent live features
         
         # Daily state
         self._top_50: List[str] = []
@@ -117,6 +119,7 @@ class TradingPipeline:
         self._gemini = get_gemini_client()
         self._order_manager = get_order_manager()
         self._portfolio_manager = get_portfolio_manager()
+        self._live_feature_builder = get_live_feature_builder()  # Consistent live features
         
         try:
             self._rl_agent = get_trading_agent()
@@ -742,15 +745,27 @@ class TradingPipeline:
         """
         Get live features for RL prediction (70 features matching TradingEnv).
         
+        Uses centralized LiveFeatureBuilder for consistency with training data.
         Market features (63) + Position features (7) = 70 total.
-        Uses live data from IBKR and current position state.
+        
+        Integrates:
+        - VIX and VIX3M from IBKR
+        - Real options data (put/call ratio, ATM IV)
+        - Event features from MajorEventsCalculator
+        - DTE features from DTEOptimizer
+        - Daily technicals from DailyFeatureCalculator
         """
         try:
             if self._data_fetcher is None:
                 logger.warning("Data fetcher not available for live features")
                 return None
             
-            # Get live data
+            if self._live_feature_builder is None:
+                self._live_feature_builder = get_live_feature_builder()
+            
+            # ================================================================
+            # 1. Fetch live data from IBKR
+            # ================================================================
             quote = await self._data_fetcher.get_stock_quote(symbol)
             vix = await self._data_fetcher.get_vix()
             
@@ -758,124 +773,34 @@ class TradingPipeline:
                 logger.warning(f"No live quote for {symbol}")
                 return None
             
-            from datetime import datetime
-            import math
-            import numpy as np
-            
-            now = datetime.now()
             price = quote.get('last', 0)
-            
-            # Calculate time features (cyclical encoding)
-            minutes_of_day = now.hour * 60 + now.minute
-            day_of_week = now.weekday()
-            day_of_year = now.timetuple().tm_yday
-            
-            sin_time = math.sin(2 * math.pi * minutes_of_day / 1440)
-            cos_time = math.cos(2 * math.pi * minutes_of_day / 1440)
-            sin_dow = math.sin(2 * math.pi * day_of_week / 7)
-            cos_dow = math.cos(2 * math.pi * day_of_week / 7)
-            sin_doy = math.sin(2 * math.pi * day_of_year / 365)
-            cos_doy = math.cos(2 * math.pi * day_of_year / 365)
-            
-            # VIX features - get REAL VIX and VIX3M
             vix_value = vix or 18.0
-            vix3m_value = await self._data_fetcher.get_vix3m() if hasattr(self._data_fetcher, 'get_vix3m') else vix_value * 1.1
-            vix3m_value = vix3m_value or vix_value * 1.1
             
-            vix_norm = vix_value / 100.0
-            vix3m_norm = vix3m_value / 100.0
-            vix_ratio = vix_value / vix3m_value if vix3m_value > 0 else 1.0
-            vix_in_contango = 1 if vix_ratio < 1 else 0
-            vix_percentile = min(vix_value / 50.0, 1.0)
-            vix_zscore = (vix_value - 20) / 10
-            
-            # VIX changes - calculate from stored history
-            vix_change_1d = 0.0
-            vix_change_5d = 0.0
-            if hasattr(self, '_vix_history') and len(self._vix_history) > 0:
-                if len(self._vix_history) >= 1:
-                    vix_change_1d = (vix_value - self._vix_history[-1]) / self._vix_history[-1] if self._vix_history[-1] > 0 else 0
-                if len(self._vix_history) >= 5:
-                    vix_change_5d = (vix_value - self._vix_history[-5]) / self._vix_history[-5] if self._vix_history[-5] > 0 else 0
-            
-            # Update VIX history
-            if not hasattr(self, '_vix_history'):
-                self._vix_history = []
-            self._vix_history.append(vix_value)
-            if len(self._vix_history) > 10:
-                self._vix_history = self._vix_history[-10:]
-            
-            # Price features - calculate from stored history
-            if not hasattr(self, '_price_history'):
-                self._price_history = {}
-            if symbol not in self._price_history:
-                self._price_history[symbol] = []
-            
-            prices = self._price_history[symbol]
-            return_1m = (price - prices[-1]) / prices[-1] if len(prices) >= 1 and prices[-1] > 0 else 0.0
-            return_5m = (price - prices[-5]) / prices[-5] if len(prices) >= 5 and prices[-5] > 0 else 0.0
-            
-            # Calculate volatility and momentum from history
-            if len(prices) >= 20:
-                returns = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices)) if prices[i-1] > 0]
-                volatility_20 = float(np.std(returns[-20:])) if len(returns) >= 20 else vix_value / 100 * 0.05
-                momentum_20 = (price - prices[-20]) / prices[-20] if prices[-20] > 0 else 0.0
-            else:
-                volatility_20 = vix_value / 100 * 0.05
-                momentum_20 = 0.0
-            
-            range_pct = (quote.get('high', price) - quote.get('low', price)) / price if price > 0 else 0.02
-            
-            # Update price history
-            prices.append(price)
-            if len(prices) > 30:
-                self._price_history[symbol] = prices[-30:]
-            
-            # Calculate REAL Greeks using VannaCalculator
-            # Uses ATM option assumptions for live prediction
-            from ml.vanna_calculator import get_vanna_calculator
-            
+            # Get VIX3M for term structure
+            vix3m = None
             try:
-                vanna_calc = get_vanna_calculator()
-                
-                # ATM option parameters
-                S = price  # Current stock price
-                K = price  # ATM strike
-                T = 30 / 365  # ~30 DTE (typical short-term option)
-                sigma = vix_value / 100  # IV approximated from VIX
-                
-                # Calculate all Greeks
-                greeks = vanna_calc.calculate_all_greeks(
-                    S=S, K=K, T=T, sigma=sigma,
-                    option_type='put'  # Vanna strategy typically uses puts
-                )
-                
-                delta = greeks.delta
-                gamma = greeks.gamma
-                theta = greeks.theta
-                vega = greeks.vega
-                vanna = greeks.vanna
-                charm = greeks.charm
-                volga = greeks.volga
-                
-                logger.debug(f"Live Greeks {symbol}: Δ={delta:.3f}, Vanna={vanna:.4f}, Volga={volga:.4f}")
-                
-            except Exception as e:
-                logger.warning(f"Greeks calculation failed for {symbol}: {e}, using fallbacks")
-                # Fallback values (typical ATM put Greeks)
-                delta = -0.5
-                gamma = 0.02
-                theta = -0.03
-                vega = 0.15
-                vanna = 0.01
-                charm = 0.001
-                volga = 0.05
+                vix3m = await self._data_fetcher.get_vix3m()
+            except Exception:
+                pass
             
-            # Historical Daily Features
-            # =========================
+            # ================================================================
+            # 2. Fetch real options market data
+            # ================================================================
+            options_data = None
+            try:
+                options_data = await self._data_fetcher.get_options_market_data(symbol)
+                logger.debug(f"Got options data for {symbol}: {options_data}")
+            except Exception as e:
+                logger.debug(f"Options data fetch failed for {symbol}: {e}")
+            
+            # ================================================================
+            # 3. Calculate daily technical features
+            # ================================================================
             daily_features = await self._calculate_technical_features(symbol, price)
             
-            # Position features
+            # ================================================================
+            # 4. Get position state
+            # ================================================================
             has_position = symbol in self._active_positions
             position_info = self._active_positions.get(symbol, {})
             
@@ -883,136 +808,41 @@ class TradingPipeline:
             days_held = 0.0
             if has_position and 'entry_time' in position_info:
                 entry_time = position_info['entry_time']
-                days_held = (now - entry_time).total_seconds() / 86400
+                days_held = (datetime.now() - entry_time).total_seconds() / 86400
             
-            # =============================================
-            # ML PREDICTIONS - Real values for RL inference
-            # =============================================
+            # ================================================================
+            # 5. Build features using LiveFeatureBuilder (Single Source of Truth)
+            # ================================================================
+            features = self._live_feature_builder.build_all_features(
+                symbol=symbol,
+                price=price,
+                vix=vix_value,
+                vix3m=vix3m,
+                quote=quote,
+                options_data=options_data,
+                daily_features=daily_features,
+                has_position=has_position,
+                pnl_pct=pnl_pct,
+                days_held=days_held,
+                capital_ratio=1.0,
+                trade_count=self._daily_trades,
+                bid_ask_spread=0.02,
+                market_open=self._is_market_open(),
+            )
             
-            # Regime Classification
-            try:
-                regime_result = self._regime_classifier.classify_by_vix(vix_value)
-                regime_ml = regime_result.regime
-                regime_adjustments = self._regime_classifier.get_strategy_adjustment(regime_ml)
-                regime_adj_position = regime_adjustments.get('position_size', 1.0)
-                regime_adj_delta = regime_adjustments.get('delta_target', 1.0)
-                regime_adj_dte = regime_adjustments.get('dte_adjustment', 1.0)
-            except Exception as e:
-                logger.debug(f"Regime classification failed: {e}")
-                regime_ml = 1  # Normal
-                regime_adj_position = 1.0
-                regime_adj_delta = 1.0
-                regime_adj_dte = 1.0
-            
-            # Trade Success Prediction
-            try:
-                trade_features = {
-                    'vix': vix_value,
-                    'vix_ratio': vix_ratio,
-                    'regime': regime_ml,
-                    'sin_time': sin_time,
-                    'cos_time': cos_time,
-                    'delta': delta,
-                    'vanna': vanna,
-                    'volga': volga,
-                }
-                trade_prob = self._ml_predictor.predict(trade_features)
-                signal_high_prob = 1 if trade_prob > 0.6 else 0
-            except Exception as e:
-                logger.debug(f"Trade prediction failed: {e}")
-                trade_prob = 0.5
-                signal_high_prob = 0
-            
-            # Build feature dict matching TradingEnv.MARKET_FEATURES order
-            features = {
-                # Time (6)
-                'sin_time': sin_time,
-                'cos_time': cos_time,
-                'sin_dow': sin_dow,
-                'cos_dow': cos_dow,
-                'sin_doy': sin_doy,
-                'cos_doy': cos_doy,
-                # VIX (8)
-                'vix_ratio': vix_ratio,
-                'vix_in_contango': vix_in_contango,
-                'vix_change_1d': vix_change_1d,
-                'vix_change_5d': vix_change_5d,
-                'vix_percentile': vix_percentile,
-                'vix_zscore': vix_zscore,
-                'vix_norm': vix_norm,
-                'vix3m_norm': vix3m_norm,
-                # Regime (1)
-                'regime': regime_ml,
-                # Options (3)
-                'options_iv_atm': vix_norm,
-                'options_put_call_ratio': 1.0,  # Would need options data
-                'options_volume_norm': 0.5,     # Would need options data
-                # Price (5)
-                'return_1m': return_1m,
-                'return_5m': return_5m,
-                'volatility_20': volatility_20,
-                'momentum_20': momentum_20,
-                'range_pct': range_pct,
-                # Greeks (7)
-                'delta': delta,
-                'gamma': gamma,
-                'theta': theta,
-                'vega': vega,
-                'vanna': vanna,
-                'charm': charm,
-                'volga': volga,
-                # ML outputs (7) - Real predictions
-                'regime_ml': regime_ml,
-                'regime_adj_position': regime_adj_position,
-                'regime_adj_delta': regime_adj_delta,
-                'regime_adj_dte': regime_adj_dte,
-                'dte_confidence': 0.5,  # Would need DTE model
-                'optimal_dte_norm': 0.5,  # Would need DTE model
-                'trade_prob': trade_prob,
-                # Binary signals (5)
-                'signal_high_prob': signal_high_prob,
-                'signal_low_vol': 1 if vix_value < 15 else 0,
-                'signal_crisis': 1 if vix_value > 30 else 0,
-                'signal_contango': vix_in_contango,
-                'signal_backwardation': 1 - vix_in_contango,
-                # Event features (4)
-                'days_to_major_event': 7,
-                'is_event_week': 0,
-                'is_event_day': 0,
-                'event_iv_boost': 0.0,
-                # Daily features (17) - Real values
-                'day_sma_200': daily_features['day_sma_200'],
-                'day_sma_50': daily_features['day_sma_50'],
-                'day_sma_20': daily_features['day_sma_20'],
-                'day_price_vs_sma200': daily_features['day_price_vs_sma200'],
-                'day_price_vs_sma50': daily_features['day_price_vs_sma50'],
-                'day_rsi_14': daily_features['day_rsi_14'],
-                'day_atr_14': daily_features['day_atr_14'],
-                'day_atr_pct': daily_features['day_atr_pct'],
-                'day_bb_position': daily_features['day_bb_position'],
-                'day_macd': daily_features['day_macd'],
-                'day_macd_hist': daily_features['day_macd_hist'],
-                'day_above_sma200': daily_features['day_above_sma200'],
-                'day_above_sma50': daily_features['day_above_sma50'],
-                'day_sma_50_200_ratio': daily_features['day_sma_50_200_ratio'],
-                'day_days_to_major_event': 7,
-                'day_is_event_week': 0,
-                'day_event_iv_boost': 0.0,
-                # Position features (7)
-                'pnl_pct': pnl_pct,
-                'days_held': days_held,
-                'position_flag': 1.0 if has_position else 0.0,
-                'capital_ratio': 1.0,
-                'trade_count': min(self._daily_trades / 10, 1.0),
-                'bid_ask_spread': 0.02,
-                'market_open': 1.0 if self._is_market_open() else 0.0,
-            }
+            # Validate feature count
+            expected_count = self._live_feature_builder.N_FEATURES
+            if len(features) != expected_count:
+                logger.error(f"Feature count mismatch: {len(features)} vs {expected_count}")
+                return None
             
             logger.debug(f"Built {len(features)} live features for {symbol}")
             return features
             
         except Exception as e:
             logger.error(f"Error getting live features for {symbol}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return None
     
     # =========================================================================

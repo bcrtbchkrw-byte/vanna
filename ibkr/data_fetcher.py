@@ -136,6 +136,110 @@ class IBKRDataFetcher:
             logger.error(f"Error fetching VIX: {e}")
             return None
     
+    async def get_vix3m(self) -> Optional[float]:
+        """
+        Get current VIX3M (3-month VIX) value.
+        
+        Used for VIX term structure analysis (contango/backwardation).
+        
+        Returns:
+            VIX3M value (e.g., 20.5)
+        """
+        conn = await self._get_connection()
+        
+        if not conn.is_connected:
+            logger.error("Not connected to IBKR")
+            return None
+        
+        try:
+            vix3m = Index('VIX3M', 'CBOE')
+            await conn.ib.qualifyContractsAsync(vix3m)
+            
+            ticker = conn.ib.reqMktData(vix3m, '', False, False)
+            await asyncio.sleep(self._data_timeout)
+            
+            vix3m_value = ticker.last if ticker.last and ticker.last > 0 else ticker.close
+            
+            conn.ib.cancelMktData(vix3m)
+            
+            if vix3m_value and vix3m_value > 0:
+                logger.info(f"📈 VIX3M: {vix3m_value:.2f}")
+                return float(vix3m_value)
+            else:
+                logger.warning("Could not fetch VIX3M value")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error fetching VIX3M: {e}")
+            return None
+    
+    async def get_options_market_data(self, symbol: str) -> Dict[str, float]:
+        """
+        Get aggregate options market data for a symbol.
+        
+        Used for live feature construction (put/call ratio, ATM IV, volume).
+        
+        Returns:
+            Dict with:
+            - iv_atm: ATM implied volatility
+            - put_call_ratio: Put volume / Call volume
+            - volume_norm: Normalized options volume (z-score)
+            - total_volume: Raw total options volume
+        """
+        defaults = {
+            'iv_atm': 0.2,
+            'put_call_ratio': 0.8,
+            'volume_norm': 0.5,
+            'total_volume': 0,
+        }
+        
+        try:
+            # Get option chain for ATM strike
+            chain = await self.get_option_chain(symbol, strikes=3)
+            
+            if not chain or (not chain.get('calls') and not chain.get('puts')):
+                return defaults
+            
+            # Extract ATM IV (closest to underlying price)
+            underlying_price = chain.get('underlying_price', 0)
+            
+            atm_iv = 0.2
+            if chain['calls']:
+                # Find ATM call
+                atm_call = min(chain['calls'], 
+                              key=lambda x: abs(x['strike'] - underlying_price))
+                if atm_call.get('iv') and atm_call['iv'] > 0:
+                    atm_iv = atm_call['iv']
+            
+            # Calculate put/call volume ratio
+            total_call_volume = sum(c.get('volume', 0) for c in chain['calls'])
+            total_put_volume = sum(p.get('volume', 0) for p in chain['puts'])
+            total_volume = total_call_volume + total_put_volume
+            
+            if total_call_volume > 0:
+                put_call_ratio = total_put_volume / total_call_volume
+            else:
+                put_call_ratio = 1.0  # Default if no call volume
+            
+            # Normalize volume (rough z-score based on typical SPY volume)
+            # SPY typically has ~2M options contracts daily
+            typical_volume = 50000  # Per expiry cycle
+            volume_norm = min(2.0, total_volume / typical_volume) - 1  # Center around 0
+            
+            result = {
+                'iv_atm': atm_iv,
+                'put_call_ratio': min(put_call_ratio, 3.0),  # Cap at 3.0
+                'volume_norm': volume_norm,
+                'total_volume': total_volume,
+            }
+            
+            logger.info(f"📊 {symbol} Options: IV={atm_iv:.1%}, P/C={put_call_ratio:.2f}, Vol={total_volume:,}")
+            return result
+            
+        except Exception as e:
+            logger.warning(f"Error fetching options market data for {symbol}: {e}")
+            return defaults
+    
     # =========================================================================
     # Option Chain
     # =========================================================================
