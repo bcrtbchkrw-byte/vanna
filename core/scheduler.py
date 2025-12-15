@@ -63,21 +63,29 @@ class Scheduler:
                 except Exception as e:
                     logger.error(f"Maintenance failed: {e}")
         
-        # 2. Saturday Training (Saturday, 06:00)
+        # 2. Saturday Data + Training (Saturday, 06:00)
         # 5 = Saturday
         if now.weekday() == 5 and now.hour == 6:
             if self._last_training_date != today:
-                logger.info("🗓️ SATURDAY: Starting weekly ML/RL training...")
+                logger.info("🗓️ SATURDAY: Starting weekly data maintenance + training...")
                 try:
+                    # Step 1: Merge live data to parquet
+                    logger.info("📊 Step 1/3: Merging live data...")
+                    await manager.merge_live_to_parquet()
+                    
+                    # Step 2: Check and patch any gaps
+                    logger.info("🔧 Step 2/3: Checking for data gaps...")
+                    await manager.run_maintenance()
+                    
+                    # Step 3: Run ML/RL training
+                    logger.info("🧠 Step 3/3: Running ML/RL training...")
                     from automation.saturday_training import run_saturday_training
-                    
-                    # Run training
                     results = await run_saturday_training(skip_rl=False, rl_timesteps=50_000)
-                    logger.info(f"✅ Saturday training complete: {results}")
                     
+                    logger.info(f"✅ Saturday routine complete: {results}")
                     self._last_training_date = today
                 except Exception as e:
-                    logger.error(f"Saturday training failed: {e}")
+                    logger.error(f"Saturday routine failed: {e}")
 
 # Singleton
 _scheduler = None
