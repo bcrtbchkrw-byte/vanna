@@ -8,7 +8,7 @@ All modules should import symbols from here to avoid circular imports.
 CORE_ETFS = ['SPY', 'QQQ', 'IWM', 'GLD', 'TLT']
 
 # Individual Stocks (User requested + High Volatility)
-STOCKS = ['AAPL', 'AMD', 'TSLA', 'NVDA', 'MSFT', 'AMZN', 'COIN']
+STOCKS = ['AAPL', 'AMD', 'TSLA', 'NVDA', 'MSFT', 'AMZN', 'COIN', 'JPM', 'SMCI']
 
 # Complete list for ML/RL training
 TRAINING_SYMBOLS = CORE_ETFS + STOCKS
