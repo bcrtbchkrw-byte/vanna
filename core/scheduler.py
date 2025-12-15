@@ -63,13 +63,30 @@ class Scheduler:
                 except Exception as e:
                     logger.error(f"Maintenance failed: {e}")
         
-        # 2. Saturday Data + Training (Saturday, 06:00)
+        # 2. Daily Live Data Merge (After market close, 16:30)
+        # Merge live bars from SQLite to parquet daily (Mon-Fri)
+        if now.weekday() < 5 and now.hour == 16 and now.minute >= 30 and now.minute < 31:
+            merge_key = f"merge_{today}"
+            if not hasattr(self, '_last_merge_date') or self._last_merge_date != today:
+                logger.info("📊 Daily merge: Saving live data to parquet...")
+                try:
+                    manager = get_maintenance_manager()
+                    results = await manager.merge_live_to_parquet()
+                    self._last_merge_date = today
+                    total = sum(v for v in results.values() if v > 0)
+                    logger.info(f"✅ Daily merge complete: {total} new bars saved")
+                except Exception as e:
+                    logger.error(f"Daily merge failed: {e}")
+        
+        # 3. Saturday Data + Training (Saturday, 06:00)
         # 5 = Saturday
         if now.weekday() == 5 and now.hour == 6:
             if self._last_training_date != today:
                 logger.info("🗓️ SATURDAY: Starting weekly data maintenance + training...")
                 try:
-                    # Step 1: Merge live data to parquet
+                    manager = get_maintenance_manager()
+                    
+                    # Step 1: Merge live data to parquet (final cleanup)
                     logger.info("📊 Step 1/3: Merging live data...")
                     await manager.merge_live_to_parquet()
                     
