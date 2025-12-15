@@ -291,22 +291,14 @@ class TradingPipeline:
             
             logger.warning(f"⚠️ Missing datasets: {missing_files[:5]}... (Total {len(missing_files)} missing)")
 
-            # 2. Update Data (If missing)
-            logger.info("⬇️ Downloading Historical Data (550 days + 10 years)...")
-            from ml.vanna_data_pipeline import get_vanna_pipeline
-            pipeline = get_vanna_pipeline()
+            # 2. Update Data (Only missing symbols - smart download)
+            logger.info("⬇️ Downloading missing historical data...")
+            from automation.data_maintenance import get_maintenance_manager
+            manager = get_maintenance_manager()
             
-            # Ensure connection
-            conn = await pipeline._get_connection()
-            if not conn.is_connected:
-                await conn.connect()
-                await asyncio.sleep(2)
-            
-            if conn.is_connected:
-                await pipeline.fetch_all_historical(days=550, years=10)
-                logger.info("✅ Data download complete")
-            else:
-                logger.warning("⚠️ Could not connect to IBKR for data update. Skipping.")
+            # ensure_historical_data() only downloads missing symbols
+            await manager.ensure_historical_data()
+            logger.info("✅ Data download complete")
             
             # 2. Retrain Model
             logger.info("🧠 Retraining RL Model...")

@@ -26,27 +26,26 @@ async def main():
     logger.info("=" * 60)
     
     # =========================================================================
-    # STEP 1: UPDATE DATA
+    # STEP 1: UPDATE DATA (Smart - only missing symbols)
     # =========================================================================
     logger.info("\n⬇️ STEP 1: UPDATING HISTORICAL DATA")
-    logger.info("   Connecting to IBKR...")
+    logger.info("   Using smart download (only missing symbols)...")
     
     try:
-        pipeline = get_vanna_pipeline()
+        from automation.data_maintenance import get_maintenance_manager
+        manager = get_maintenance_manager()
         
-        # Ensure connection
-        conn = await pipeline._get_connection()
-        if not conn.is_connected:
-            await conn.connect()
-            await asyncio.sleep(2) # Wait for handshake
-            
-        if not conn.is_connected:
-            logger.error("❌ Could not connect to IBKR. Please ensure TWS/Gateway is running.")
-            sys.exit(1)
-            
-        logger.info("   Fetch started (this may take 10-20 minutes)...")
-        # Update both Intraday (550 days) and Daily (10 years)
-        await pipeline.fetch_all_historical(days=550, years=10)
+        # Step 1a: Ensure all symbols have historical data
+        logger.info("   Checking for missing symbols...")
+        await manager.ensure_historical_data()
+        
+        # Step 1b: Merge any accumulated live data
+        logger.info("   Merging live data to parquet...")
+        await manager.merge_live_to_parquet()
+        
+        # Step 1c: Check for gaps and patch them
+        logger.info("   Checking for data gaps...")
+        await manager.run_maintenance()
         
         logger.info("✅ Data update complete!")
         
