@@ -196,7 +196,8 @@ class VannaFeatureEngineering:
     def add_options_features(
         self,
         df: pd.DataFrame,
-        options_data: Optional[Dict[str, Any]] = None
+        options_data: Optional[Dict[str, Any]] = None,
+        vix_col: str = 'vix'
     ) -> pd.DataFrame:
         """
         Add options-derived features.
@@ -205,31 +206,58 @@ class VannaFeatureEngineering:
         - options_iv_atm: At-the-money implied volatility
         - options_volume: Total options volume
         - options_put_call_ratio: Put/Call ratio
-        - options_skew: Put-Call skew (25-delta)
+        
+        If no real options data available, estimates from VIX for training consistency.
         
         Args:
             df: DataFrame to add features to
             options_data: Dict with options aggregates per timestamp
+            vix_col: VIX column for estimation fallback
             
         Returns:
             DataFrame with options features
         """
         df = df.copy()
         
-        if options_data is None:
-            # Placeholder columns
-            df['options_iv_atm'] = np.nan
-            df['options_volume'] = np.nan
-            df['options_put_call_ratio'] = np.nan
-            logger.debug("No options data provided, added placeholder columns")
+        if options_data is not None:
+            # Map real options data to DataFrame
+            for col in ['options_iv_atm', 'options_volume', 'options_put_call_ratio']:
+                df[col] = df['timestamp'].map(
+                    lambda ts: options_data.get(str(ts), {}).get(col.replace('options_', ''))
+                )
             return df
         
-        # Map options data to DataFrame
-        # Assuming options_data is {timestamp: {iv_atm, volume, pc_ratio}}
-        for col in ['options_iv_atm', 'options_volume', 'options_put_call_ratio']:
-            df[col] = df['timestamp'].map(
-                lambda ts: options_data.get(str(ts), {}).get(col.replace('options_', ''))
-            )
+        # ================================================================
+        # ESTIMATE OPTIONS DATA FROM VIX (for historical data consistency)
+        # ================================================================
+        # This ensures training data has similar values to live inference
+        
+        if vix_col in df.columns and not df[vix_col].isnull().all():
+            vix = df[vix_col].fillna(18.0)
+            
+            # ATM IV ≈ VIX (normalized to 0-1 scale)
+            # VIX is annualized %, so divide by 100
+            df['options_iv_atm'] = vix / 100.0
+            
+            # Put/Call ratio estimation from VIX
+            # Higher VIX = more puts traded (fear) → higher ratio
+            # Base ratio around 0.8, adjust by VIX level
+            # VIX 15 → 0.7, VIX 20 → 0.8, VIX 30 → 1.0, VIX 40 → 1.2
+            df['options_put_call_ratio'] = 0.7 + (vix - 15) * 0.02
+            df['options_put_call_ratio'] = df['options_put_call_ratio'].clip(0.5, 1.5)
+            
+            # Volume normalized - use constant 0.5 (average)
+            # More sophisticated: could vary with VIX (high VIX = high volume)
+            df['options_volume_norm'] = 0.5 + (vix - 20) * 0.01
+            df['options_volume_norm'] = df['options_volume_norm'].clip(0.2, 1.0)
+            
+            logger.debug(f"Estimated options features from VIX (mean IV: {df['options_iv_atm'].mean():.3f})")
+        else:
+            # Fallback to neutral values if no VIX available
+            df['options_iv_atm'] = 0.18  # ~18% IV
+            df['options_put_call_ratio'] = 0.8  # Neutral
+            df['options_volume_norm'] = 0.5  # Average
+            logger.warning("No VIX data for options estimation, using defaults")
         
         return df
     
@@ -312,8 +340,8 @@ class VannaFeatureEngineering:
             'vix_percentile', 'vix_zscore', 'vix_in_contango',
             # Regime
             'regime',
-            # Options
-            'options_iv_atm', 'options_volume', 'options_put_call_ratio',
+            # Options (VIX-estimated if no real data)
+            'options_iv_atm', 'options_volume_norm', 'options_put_call_ratio',
             # Price
             'return_1m', 'return_5m', 'volatility_20', 'momentum_20', 'range_pct'
         ]

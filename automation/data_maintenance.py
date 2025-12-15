@@ -409,10 +409,15 @@ class DataMaintenanceManager:
                 
                 # 3. Merge and deduplicate
                 if not existing_df.empty:
-                    # Align columns
-                    common_cols = list(set(existing_df.columns) & set(live_df.columns))
-                    live_df = live_df[common_cols]
-                    existing_df = existing_df[common_cols]
+                    # Get union of all columns (preserve all data)
+                    all_cols = list(set(existing_df.columns) | set(live_df.columns))
+                    
+                    # Add missing columns with NaN
+                    for col in all_cols:
+                        if col not in existing_df.columns:
+                            existing_df[col] = np.nan
+                        if col not in live_df.columns:
+                            live_df[col] = np.nan
                     
                     merged_df = pd.concat([existing_df, live_df], ignore_index=True)
                 else:
@@ -426,6 +431,13 @@ class DataMaintenanceManager:
                     logger.info(f"   🗑️ Removed {duplicates_removed} duplicate timestamps")
                 
                 merged_df = merged_df.sort_values('timestamp').reset_index(drop=True)
+                
+                # Re-apply feature engineering to fill any missing options data
+                # This ensures options_iv_atm, options_put_call_ratio, options_volume_norm
+                # are estimated from VIX if they're NaN
+                if 'options_iv_atm' in merged_df.columns and merged_df['options_iv_atm'].isnull().any():
+                    merged_df = self.pipeline.feature_eng.add_options_features(merged_df)
+                    logger.info(f"   📊 Re-estimated options features from VIX")
                 
                 # Validate timestamp continuity (smoke test)
                 if len(merged_df) > 1:
