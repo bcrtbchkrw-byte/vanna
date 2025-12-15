@@ -791,14 +791,45 @@ class TradingPipeline:
             momentum_20 = 0.0
             range_pct = 0.02  # Approximate daily range
             
-            # Greeks placeholders (would need option chain)
-            delta = -0.16
-            gamma = 0.01
-            theta = -0.02
-            vega = 0.15
-            vanna = 0.0
-            charm = 0.0
-            volga = 0.0
+            # Calculate REAL Greeks using VannaCalculator
+            # Uses ATM option assumptions for live prediction
+            from ml.vanna_calculator import get_vanna_calculator
+            
+            try:
+                vanna_calc = get_vanna_calculator()
+                
+                # ATM option parameters
+                S = price  # Current stock price
+                K = price  # ATM strike
+                T = 30 / 365  # ~30 DTE (typical short-term option)
+                sigma = vix_value / 100  # IV approximated from VIX
+                
+                # Calculate all Greeks
+                greeks = vanna_calc.calculate_all_greeks(
+                    S=S, K=K, T=T, sigma=sigma,
+                    option_type='put'  # Vanna strategy typically uses puts
+                )
+                
+                delta = greeks.delta
+                gamma = greeks.gamma
+                theta = greeks.theta
+                vega = greeks.vega
+                vanna = greeks.vanna
+                charm = greeks.charm
+                volga = greeks.volga
+                
+                logger.debug(f"Live Greeks {symbol}: Δ={delta:.3f}, Vanna={vanna:.4f}, Volga={volga:.4f}")
+                
+            except Exception as e:
+                logger.warning(f"Greeks calculation failed for {symbol}: {e}, using fallbacks")
+                # Fallback values (typical ATM put Greeks)
+                delta = -0.5
+                gamma = 0.02
+                theta = -0.03
+                vega = 0.15
+                vanna = 0.01
+                charm = 0.001
+                volga = 0.05
             
             # Historical Daily Features
             # =========================
