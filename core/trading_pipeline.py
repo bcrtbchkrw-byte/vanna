@@ -760,6 +760,7 @@ class TradingPipeline:
             
             from datetime import datetime
             import math
+            import numpy as np
             
             now = datetime.now()
             price = quote.get('last', 0)
@@ -776,20 +777,59 @@ class TradingPipeline:
             sin_doy = math.sin(2 * math.pi * day_of_year / 365)
             cos_doy = math.cos(2 * math.pi * day_of_year / 365)
             
-            # VIX features
+            # VIX features - get REAL VIX and VIX3M
             vix_value = vix or 18.0
-            vix_norm = vix_value / 100.0
-            vix_ratio = 1.0  # Would need VIX3M for proper ratio
-            vix_in_contango = 1 if vix_ratio < 1 else 0
-            vix_percentile = min(vix_value / 50.0, 1.0)  # Approximate
-            vix_zscore = (vix_value - 20) / 10  # Approximate
+            vix3m_value = await self._data_fetcher.get_vix3m() if hasattr(self._data_fetcher, 'get_vix3m') else vix_value * 1.1
+            vix3m_value = vix3m_value or vix_value * 1.1
             
-            # Price features (returns - using 0 for single snapshot)
-            return_1m = 0.0
-            return_5m = 0.0
-            volatility_20 = vix_value / 100 * 0.05  # Approximate
-            momentum_20 = 0.0
-            range_pct = 0.02  # Approximate daily range
+            vix_norm = vix_value / 100.0
+            vix3m_norm = vix3m_value / 100.0
+            vix_ratio = vix_value / vix3m_value if vix3m_value > 0 else 1.0
+            vix_in_contango = 1 if vix_ratio < 1 else 0
+            vix_percentile = min(vix_value / 50.0, 1.0)
+            vix_zscore = (vix_value - 20) / 10
+            
+            # VIX changes - calculate from stored history
+            vix_change_1d = 0.0
+            vix_change_5d = 0.0
+            if hasattr(self, '_vix_history') and len(self._vix_history) > 0:
+                if len(self._vix_history) >= 1:
+                    vix_change_1d = (vix_value - self._vix_history[-1]) / self._vix_history[-1] if self._vix_history[-1] > 0 else 0
+                if len(self._vix_history) >= 5:
+                    vix_change_5d = (vix_value - self._vix_history[-5]) / self._vix_history[-5] if self._vix_history[-5] > 0 else 0
+            
+            # Update VIX history
+            if not hasattr(self, '_vix_history'):
+                self._vix_history = []
+            self._vix_history.append(vix_value)
+            if len(self._vix_history) > 10:
+                self._vix_history = self._vix_history[-10:]
+            
+            # Price features - calculate from stored history
+            if not hasattr(self, '_price_history'):
+                self._price_history = {}
+            if symbol not in self._price_history:
+                self._price_history[symbol] = []
+            
+            prices = self._price_history[symbol]
+            return_1m = (price - prices[-1]) / prices[-1] if len(prices) >= 1 and prices[-1] > 0 else 0.0
+            return_5m = (price - prices[-5]) / prices[-5] if len(prices) >= 5 and prices[-5] > 0 else 0.0
+            
+            # Calculate volatility and momentum from history
+            if len(prices) >= 20:
+                returns = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices)) if prices[i-1] > 0]
+                volatility_20 = float(np.std(returns[-20:])) if len(returns) >= 20 else vix_value / 100 * 0.05
+                momentum_20 = (price - prices[-20]) / prices[-20] if prices[-20] > 0 else 0.0
+            else:
+                volatility_20 = vix_value / 100 * 0.05
+                momentum_20 = 0.0
+            
+            range_pct = (quote.get('high', price) - quote.get('low', price)) / price if price > 0 else 0.02
+            
+            # Update price history
+            prices.append(price)
+            if len(prices) > 30:
+                self._price_history[symbol] = prices[-30:]
             
             # Calculate REAL Greeks using VannaCalculator
             # Uses ATM option assumptions for live prediction
@@ -845,6 +885,44 @@ class TradingPipeline:
                 entry_time = position_info['entry_time']
                 days_held = (now - entry_time).total_seconds() / 86400
             
+            # =============================================
+            # ML PREDICTIONS - Real values for RL inference
+            # =============================================
+            
+            # Regime Classification
+            try:
+                regime_result = self._regime_classifier.classify_by_vix(vix_value)
+                regime_ml = regime_result.regime
+                regime_adjustments = self._regime_classifier.get_strategy_adjustment(regime_ml)
+                regime_adj_position = regime_adjustments.get('position_size', 1.0)
+                regime_adj_delta = regime_adjustments.get('delta_target', 1.0)
+                regime_adj_dte = regime_adjustments.get('dte_adjustment', 1.0)
+            except Exception as e:
+                logger.debug(f"Regime classification failed: {e}")
+                regime_ml = 1  # Normal
+                regime_adj_position = 1.0
+                regime_adj_delta = 1.0
+                regime_adj_dte = 1.0
+            
+            # Trade Success Prediction
+            try:
+                trade_features = {
+                    'vix': vix_value,
+                    'vix_ratio': vix_ratio,
+                    'regime': regime_ml,
+                    'sin_time': sin_time,
+                    'cos_time': cos_time,
+                    'delta': delta,
+                    'vanna': vanna,
+                    'volga': volga,
+                }
+                trade_prob = self._ml_predictor.predict(trade_features)
+                signal_high_prob = 1 if trade_prob > 0.6 else 0
+            except Exception as e:
+                logger.debug(f"Trade prediction failed: {e}")
+                trade_prob = 0.5
+                signal_high_prob = 0
+            
             # Build feature dict matching TradingEnv.MARKET_FEATURES order
             features = {
                 # Time (6)
@@ -857,18 +935,18 @@ class TradingPipeline:
                 # VIX (8)
                 'vix_ratio': vix_ratio,
                 'vix_in_contango': vix_in_contango,
-                'vix_change_1d': 0.0,
-                'vix_change_5d': 0.0,
+                'vix_change_1d': vix_change_1d,
+                'vix_change_5d': vix_change_5d,
                 'vix_percentile': vix_percentile,
                 'vix_zscore': vix_zscore,
                 'vix_norm': vix_norm,
-                'vix3m_norm': vix_norm,  # Same as VIX for now
+                'vix3m_norm': vix3m_norm,
                 # Regime (1)
-                'regime': 1,  # Normal
+                'regime': regime_ml,
                 # Options (3)
                 'options_iv_atm': vix_norm,
-                'options_put_call_ratio': 1.0,
-                'options_volume_norm': 0.5,
+                'options_put_call_ratio': 1.0,  # Would need options data
+                'options_volume_norm': 0.5,     # Would need options data
                 # Price (5)
                 'return_1m': return_1m,
                 'return_5m': return_5m,
@@ -883,16 +961,16 @@ class TradingPipeline:
                 'vanna': vanna,
                 'charm': charm,
                 'volga': volga,
-                # ML outputs (7) - defaults
-                'regime_ml': 1,
-                'regime_adj_position': 1.0,
-                'regime_adj_delta': 1.0,
-                'regime_adj_dte': 1.0,
-                'dte_confidence': 0.5,
-                'optimal_dte_norm': 0.5,
-                'trade_prob': 0.5,
+                # ML outputs (7) - Real predictions
+                'regime_ml': regime_ml,
+                'regime_adj_position': regime_adj_position,
+                'regime_adj_delta': regime_adj_delta,
+                'regime_adj_dte': regime_adj_dte,
+                'dte_confidence': 0.5,  # Would need DTE model
+                'optimal_dte_norm': 0.5,  # Would need DTE model
+                'trade_prob': trade_prob,
                 # Binary signals (5)
-                'signal_high_prob': 0,
+                'signal_high_prob': signal_high_prob,
                 'signal_low_vol': 1 if vix_value < 15 else 0,
                 'signal_crisis': 1 if vix_value > 30 else 0,
                 'signal_contango': vix_in_contango,
