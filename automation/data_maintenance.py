@@ -113,33 +113,58 @@ class DataMaintenanceManager:
                 logger.info("🔍 Checking historical data...")
                 logger.info("=" * 60)
                 
-                existing = await self.check_historical_data_exists()
-                missing_symbols = [s for s, exists in existing.items() if not exists]
+                # Check what's missing (1min AND 1day separately)
+                missing_1min = []
+                missing_1day = []
                 
-                if not missing_symbols:
+                for symbol in self.SYMBOLS:
+                    df_1min = self.storage.load_historical_parquet(symbol, '1min')
+                    df_1day = self.storage.load_historical_parquet(symbol, '1day')
+                    
+                    has_1min = df_1min is not None and len(df_1min) > 1000
+                    has_1day = df_1day is not None and len(df_1day) > 100
+                    
+                    if not has_1min:
+                        missing_1min.append(symbol)
+                        logger.warning(f"❌ {symbol}: Missing 1min data")
+                    if not has_1day:
+                        missing_1day.append(symbol)
+                        logger.warning(f"❌ {symbol}: Missing 1day data")
+                    
+                    if has_1min and has_1day:
+                        logger.info(f"✅ {symbol}: OK")
+                
+                if not missing_1min and not missing_1day:
                     logger.info("✅ All historical data present")
                     return True
                 
-                logger.info(f"📥 Downloading missing data for: {', '.join(missing_symbols)}")
+                logger.info(f"📥 Missing 1min: {missing_1min}")
+                logger.info(f"📥 Missing 1day: {missing_1day}")
                 logger.info("⚠️ This will take a while with 20s delay per request...")
                 
-                for symbol in missing_symbols:
+                # Download missing 1min data
+                for symbol in missing_1min:
                     try:
-                        # Download 550 days of 1-min data
+                        logger.info(f"⬇️ Downloading {symbol} 1min (550 days)...")
                         await self.pipeline.process_historical_data(symbol, days=550, save=True)
-                        
-                        # Download 10 years of daily data (with VIX)
+                        logger.info(f"✅ {symbol} 1min complete")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to download {symbol} 1min: {e}")
+                
+                # Download missing 1day data
+                for symbol in missing_1day:
+                    try:
+                        logger.info(f"⬇️ Downloading {symbol} 1day (10 years)...")
                         daily_df = await self.pipeline.fetch_historical_daily(symbol, years=10)
                         if daily_df is not None:
-                            # Add VIX data for regime classification
                             daily_df = await self.pipeline.fetch_vix_daily(daily_df)
                             daily_df = self.pipeline.feature_eng.process_all_features(daily_df)
                             self.storage.save_historical_parquet(daily_df, symbol, '1day')
-                        
-                        logger.info(f"✅ Downloaded historical data for {symbol}")
-                        
+                            logger.info(f"✅ {symbol} 1day complete")
+                        else:
+                            logger.warning(f"⚠️ {symbol} 1day: No data returned from IBKR")
                     except Exception as e:
-                        logger.error(f"❌ Failed to download {symbol}: {e}")
+                        logger.error(f"❌ Failed to download {symbol} 1day: {e}")
                 
                 return True
                 
