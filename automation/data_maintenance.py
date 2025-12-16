@@ -58,20 +58,29 @@ class DataMaintenanceManager:
         Check if historical data exists for all symbols.
         
         Returns:
-            Dict of symbol -> has_data
+            Dict of symbol -> has_data (True only if BOTH 1min and 1day exist)
         """
         results = {}
         
         for symbol in self.SYMBOLS:
-            # Check parquet file
-            df = self.storage.load_historical_parquet(symbol, '1min')
+            # Check BOTH 1min and 1day parquet files
+            df_1min = self.storage.load_historical_parquet(symbol, '1min')
+            df_1day = self.storage.load_historical_parquet(symbol, '1day')
             
-            if df is not None and len(df) > 1000:
+            has_1min = df_1min is not None and len(df_1min) > 1000
+            has_1day = df_1day is not None and len(df_1day) > 100
+            
+            if has_1min and has_1day:
                 results[symbol] = True
-                logger.info(f"✅ {symbol}: {len(df):,} bars found")
+                logger.info(f"✅ {symbol}: {len(df_1min):,} 1min bars, {len(df_1day):,} daily bars")
             else:
                 results[symbol] = False
-                logger.warning(f"❌ {symbol}: No historical data")
+                missing = []
+                if not has_1min:
+                    missing.append("1min")
+                if not has_1day:
+                    missing.append("1day")
+                logger.warning(f"❌ {symbol}: Missing {', '.join(missing)} data")
         
         return results
     
