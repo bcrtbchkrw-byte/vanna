@@ -47,11 +47,44 @@ class DataMaintenanceManager:
         self.pipeline = get_vanna_pipeline()
         self.storage = get_data_storage()
         
-        # Initialize lock if not exists
         if DataMaintenanceManager._download_lock is None:
             DataMaintenanceManager._download_lock = asyncio.Lock()
         
         logger.info("DataMaintenanceManager initialized")
+
+    async def ensure_data_for_symbol(self, symbol: str) -> bool:
+        """
+        Ensure data exists for a single symbol (On-Demand).
+        Uses IBKR for lightweight daily history (1y).
+        Saved in 'lite_history' subdirectory.
+        """
+        # Check if data exists in lite folder or main folder
+        # We prefer lite folder, but if present in main (from training), that's fine too
+        df_1day = self.storage.load_historical_parquet(symbol, '1day', subdir='lite_history')
+        if df_1day is not None and len(df_1day) > 50:
+            return True
+            
+        # Also check main storage (if we have full history, we don't need lite)
+        df_1day_main = self.storage.load_historical_parquet(symbol, '1day')
+        if df_1day_main is not None and len(df_1day_main) > 50:
+            return True
+        
+        # Download if missing (Lightweight IBKR)
+        logger.info(f"⬇️ On-Demand (Lite): {symbol} fetching 1y daily history via IBKR...")
+        try:
+            # Fetch daily data from IBKR (1 year only)
+            df = await self.pipeline.fetch_historical_daily(symbol, years=1)
+            
+            if df is not None:
+                # Save to separate 'lite_history' folder
+                self.storage.save_historical_parquet(df, symbol, '1day', subdir='lite_history')
+                logger.info(f"✅ {symbol} 1y history saved to lite_history")
+                return True
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to download {symbol}: {e}")
+            return False
     
     async def check_historical_data_exists(self) -> Dict[str, bool]:
         """

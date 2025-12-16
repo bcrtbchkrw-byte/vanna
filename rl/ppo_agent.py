@@ -221,6 +221,7 @@ class TradingAgent:
         norm_file = self.model_path / "vec_normalize.pkl"
         if norm_file.exists():
             # Load normalizer with proper symbols
+            logger.info("Initializing lightweight dummy environment for loading normalization stats...")
             dummy_env = make_vec_env(
                 symbols=get_available_symbols()[:1],
                 n_envs_per_symbol=1,

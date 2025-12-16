@@ -8,6 +8,8 @@ Integrates IBKR, data pipeline, ML models, and trading strategies.
 import asyncio
 import signal
 import sys
+import nest_asyncio
+nest_asyncio.apply()
 from loguru import logger
 
 from config import get_config

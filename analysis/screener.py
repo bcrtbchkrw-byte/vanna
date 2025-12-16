@@ -51,7 +51,7 @@ SCREENER_UNIVERSE = [
     
     # ========== Mega Caps (Highest Options Volume) ==========
     'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'GOOG', 'META', 'NVDA', 'TSLA',
-    'BRK.B', 'UNH', 'JNJ', 'V', 'MA', 'XOM', 'JPM', 'PG', 'HD', 'CVX',
+    'UNH', 'JNJ', 'V', 'MA', 'XOM', 'JPM', 'PG', 'HD', 'CVX',
     'LLY', 'ABBV', 'PFE', 'MRK', 'AVGO', 'KO', 'PEP', 'COST', 'TMO',
     'WMT', 'BAC', 'MCD', 'CSCO', 'ABT', 'DHR', 'ACN', 'CRM', 'ADBE',
     'ORCL', 'NKE', 'NFLX', 'AMD', 'TXN', 'INTC', 'QCOM', 'IBM',
@@ -59,53 +59,53 @@ SCREENER_UNIVERSE = [
     # ========== Tech / Growth (High Volatility) ==========
     'MU', 'AMAT', 'LRCX', 'KLAC', 'ASML', 'TSM', 'MRVL', 'ON', 'NXPI',
     'NOW', 'SNOW', 'PLTR', 'U', 'DDOG', 'NET', 'ZS', 'CRWD', 'PANW', 'OKTA',
-    'SHOP', 'SQ', 'PYPL', 'COIN', 'MELI', 'SE', 'PINS', 'SNAP', 'RBLX',
+    'SHOP', 'PYPL', 'COIN', 'MELI', 'SE', 'PINS', 'SNAP', 'RBLX',
     'UBER', 'LYFT', 'DASH', 'ABNB', 'BKNG', 'EXPE', 'MAR', 'HLT', 'WYNN',
     'ZM', 'DOCU', 'ROKU', 'TWLO', 'TTD', 'BILL', 'MDB', 'ESTC', 'CFLT',
-    'PATH', 'AI', 'UPST', 'AFRM', 'OPEN', 'RDFN', 'Z', 'ZG', 'COMP',
+    'PATH', 'AI', 'UPST', 'AFRM', 'OPEN', 'Z', 'ZG', 'COMP',
     
     # ========== Fintech / Brokers (User Requested) ==========
     'SOFI', 'HOOD', 'AFRM', 'NU', 'LC', 'UPST', 'PAYO', 'PSFE',
-    'SCHW', 'IBKR', 'ETFC', 'AMBA', 'FUTU', 'TIGR', 'MKTX',
+    'SCHW', 'IBKR', 'AMBA', 'FUTU', 'TIGR', 'MKTX',
     
     # ========== Banks / Financials ==========
     'JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'USB', 'PNC', 'TFC', 'COF',
-    'AXP', 'DFS', 'BLK', 'SCHW', 'CME', 'ICE', 'NDAQ', 'CBOE',
+    'AXP', 'BLK', 'SCHW', 'CME', 'ICE', 'NDAQ', 'CBOE',
     'AIG', 'MET', 'PRU', 'ALL', 'PGR', 'TRV', 'AFL', 'HIG',
     
     # ========== Consumer / Retail ==========
     'DIS', 'CMCSA', 'SBUX', 'NKE', 'MCD', 'YUM', 'SBUX', 'CMG', 'DPZ',
     'WMT', 'COST', 'TGT', 'HD', 'LOW', 'DG', 'DLTR', 'FIVE', 'ULTA',
-    'LULU', 'GPS', 'ANF', 'URBN', 'RL', 'PVH', 'TPR', 'VFC', 'HBI',
-    'PTON', 'NLS', 'LULU', 'BIRD', 'CROX', 'SKX', 'DECK', 'WWW',
+    'LULU', 'ANF', 'URBN', 'RL', 'PVH', 'TPR', 'VFC',
+    'PTON', 'LULU', 'BIRD', 'CROX', 'DECK', 'WWW',
     
     # ========== Food / Beverages ==========
-    'HLF', 'USANA', 'HAIN', 'BYND', 'OTLY', 'TTCF',  # User requested HLF
+    'HLF', 'HAIN', 'BYND', 'OTLY',  # User requested HLF
     'KO', 'PEP', 'MNST', 'KDP', 'STZ', 'TAP', 'BUD', 'SAM',
     
     # ========== Healthcare / Biotech ==========
     'JNJ', 'PFE', 'UNH', 'ABBV', 'MRK', 'LLY', 'BMY', 'AMGN', 'GILD',
-    'MRNA', 'BNTX', 'NVAX', 'VRTX', 'REGN', 'BIIB', 'SGEN', 'ALNY',
-    'EDIT', 'CRSP', 'NTLA', 'BEAM', 'VERV', 'IONS', 'SRPT', 'BMRN',
+    'MRNA', 'BNTX', 'NVAX', 'VRTX', 'REGN', 'BIIB', 'ALNY',
+    'EDIT', 'CRSP', 'NTLA', 'BEAM', 'IONS', 'SRPT', 'BMRN',
     'EXAS', 'ILMN', 'DXCM', 'ISRG', 'ALGN', 'ZBH', 'SYK', 'MDT',
     
     # ========== Energy ==========
     'XOM', 'CVX', 'COP', 'EOG', 'SLB', 'OXY', 'MPC', 'VLO', 'PSX',
-    'PXD', 'DVN', 'FANG', 'APA', 'HAL', 'BKR', 'NOV', 'RIG',
-    'ET', 'EPD', 'MMP', 'KMI', 'WMB', 'OKE', 'TRGP', 'LNG',
+    'DVN', 'FANG', 'APA', 'HAL', 'BKR', 'NOV', 'RIG',
+    'ET', 'EPD', 'KMI', 'WMB', 'OKE', 'TRGP', 'LNG',
     
     # ========== Industrial / Aerospace ==========
     'BA', 'LMT', 'NOC', 'RTX', 'GD', 'GE', 'HON', 'CAT', 'DE',
-    'UPS', 'FDX', 'DAL', 'UAL', 'AAL', 'LUV', 'JBLU', 'ALK', 'SAVE',
+    'UPS', 'FDX', 'DAL', 'UAL', 'AAL', 'LUV', 'JBLU', 'ALK',
     'CSX', 'UNP', 'NSC', 'ODFL', 'XPO', 'CHRW', 'EXPD', 'JBHT',
     
     # ========== Auto / EV ==========
-    'TSLA', 'GM', 'F', 'RIVN', 'LCID', 'NIO', 'XPEV', 'LI', 'FSR',
+    'TSLA', 'GM', 'F', 'RIVN', 'LCID', 'NIO', 'XPEV', 'LI',
     'QS', 'CHPT', 'BLNK', 'EVGO', 'PLUG', 'FCEL', 'BE', 'BLDP',
     
     # ========== Mining / Materials ==========
-    'FCX', 'NEM', 'GOLD', 'AEM', 'NUE', 'STLD', 'CLF', 'X', 'AA',
-    'ALB', 'LAC', 'LTHM', 'MP', 'PLL', 'SQM', 'CC', 'DOW', 'LYB',
+    'FCX', 'NEM', 'GOLD', 'AEM', 'NUE', 'STLD', 'CLF', 'AA',
+    'ALB', 'LAC', 'MP', 'SQM', 'CC', 'DOW', 'LYB',
     
     # ========== REITs ==========
     'AMT', 'PLD', 'CCI', 'EQIX', 'SPG', 'O', 'AVB', 'EQR', 'VTR',
@@ -115,12 +115,12 @@ SCREENER_UNIVERSE = [
     'TLRY', 'CGC', 'ACB', 'CRON', 'SNDL', 'CURLF', 'GTBIF', 'TCNNF',
     
     # ========== Meme / Speculative (High Volume) ==========
-    'GME', 'AMC', 'BBBY', 'BB', 'WKHS', 'SPCE', 'PLTR', 'CLOV', 'WISH',
-    'IRNT', 'TMC', 'ATER', 'SDC', 'GOEV', 'HYZN', 'NKLA', 'RIDE',
+    'GME', 'AMC', 'BB', 'SPCE', 'PLTR', 'CLOV',
+    'TMC', 'ATER',
     
     # ========== China ADRs ==========
     'BABA', 'JD', 'PDD', 'BIDU', 'NIO', 'XPEV', 'LI', 'BILI', 'IQ',
-    'TME', 'VIPS', 'DIDI', 'NTES', 'TAL', 'EDU', 'GOTU', 'YMM',
+    'TME', 'VIPS', 'NTES', 'TAL', 'EDU', 'GOTU', 'YMM',
     
     # ========== User Requested ==========
     'TE',  # TE Connectivity

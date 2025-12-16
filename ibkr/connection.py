@@ -159,7 +159,7 @@ class IBKRConnection:
         """Handle error events."""
         # Ignore non-critical errors
         ignored_codes = [
-            2104, 2106, 2158,  # Market data farm messages
+            2104, 2106, 2108, 2158,  # Market data farm messages
             10276,  # News feed not allowed (account limitation, not error)
         ]
         if errorCode in ignored_codes:

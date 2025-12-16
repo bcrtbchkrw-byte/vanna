@@ -146,7 +146,8 @@ class VannaDataStorage:
         self,
         df: pd.DataFrame,
         symbol: str,
-        timeframe: str = '1min'
+        timeframe: str = '1min',
+        subdir: str = ''
     ) -> Path:
         """
         Save historical data to Parquet file.
@@ -155,12 +156,19 @@ class VannaDataStorage:
             df: DataFrame with OHLCV + features
             symbol: Symbol name
             timeframe: '1min' or '1day'
+            subdir: Optional subdirectory (e.g. 'lite')
             
         Returns:
             Path to saved file
         """
         filename = f"{symbol}_{timeframe}.parquet"
-        filepath = self.data_dir / filename
+        
+        if subdir:
+            target_dir = self.data_dir / subdir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            filepath = target_dir / filename
+        else:
+            filepath = self.data_dir / filename
         
         # Ensure proper dtypes
         if 'timestamp' in df.columns:
@@ -174,7 +182,8 @@ class VannaDataStorage:
     def load_historical_parquet(
         self,
         symbol: str,
-        timeframe: str = '1min'
+        timeframe: str = '1min',
+        subdir: str = ''
     ) -> Optional[pd.DataFrame]:
         """
         Load historical data from Parquet.
@@ -182,16 +191,27 @@ class VannaDataStorage:
         Args:
             symbol: Symbol name
             timeframe: '1min' or '1day'
+            subdir: Optional subdirectory (e.g. 'lite')
             
         Returns:
             DataFrame or None if not found
         """
         filename = f"{symbol}_{timeframe}.parquet"
-        filepath = self.data_dir / filename
+        
+        if subdir:
+            filepath = self.data_dir / subdir / filename
+        else:
+            filepath = self.data_dir / filename
         
         if not filepath.exists():
-            logger.warning(f"Parquet file not found: {filepath}")
-            return None
+            # If not found in specific subdir, try main dir as fallback (only if subdir was requested)
+            # This allows seamless transition if data was moved
+            if subdir and (self.data_dir / filename).exists():
+                 logger.debug(f"File not in {subdir}, checking main dir...")
+                 filepath = self.data_dir / filename
+            else:
+                logger.warning(f"Parquet file not found: {filepath}")
+                return None
         
         df = pd.read_parquet(filepath)
         logger.debug(f"Loaded {len(df)} bars from {filepath}")

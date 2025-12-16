@@ -5,6 +5,7 @@ Fetches market data, option chains, and Greeks from IBKR.
 """
 
 import asyncio
+import math
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -212,8 +213,13 @@ class IBKRDataFetcher:
                     atm_iv = atm_call['iv']
             
             # Calculate put/call volume ratio
-            total_call_volume = sum(c.get('volume', 0) for c in chain['calls'])
-            total_put_volume = sum(p.get('volume', 0) for p in chain['puts'])
+            def safe_vol(vol):
+                if vol is None: return 0
+                if hasattr(vol, 'real') and math.isnan(vol): return 0
+                return int(vol)
+
+            total_call_volume = sum(safe_vol(c.get('volume', 0)) for c in chain['calls'])
+            total_put_volume = sum(safe_vol(p.get('volume', 0)) for p in chain['puts'])
             total_volume = total_call_volume + total_put_volume
             
             if total_call_volume > 0:
@@ -292,8 +298,12 @@ class IBKRDataFetcher:
                 return None
             
             # Get nearest expiry if not specified
-            chain = chains[0]  # SMART exchange
-            
+            # Get nearest expiry if not specified
+            # Filter chains to prefer 'standard' trading class (usually matches symbol)
+            # This handles cases like NVDA vs 2NVDA
+            chain = next((c for c in chains if c.tradingClass == symbol), chains[0])
+            trading_class = chain.tradingClass
+
             if not expiry:
                 available_expiries = sorted(chain.expirations)
                 expiry = available_expiries[0] if available_expiries else None
@@ -303,8 +313,20 @@ class IBKRDataFetcher:
                 return None
             
             # Get strikes around ATM
-            available_strikes = sorted([s for s in chain.strikes 
-                                        if abs(s - current_price) < current_price * 0.2])
+            if chain.strikes:
+                available_strikes = sorted([s for s in chain.strikes 
+                                          if abs(s - current_price) < current_price * 0.2])
+            else:
+                available_strikes = []
+
+            # Fallback: Generate standard strikes if none found
+            if not available_strikes:
+                import numpy as np
+                base = 1.0 if current_price < 100 else 5.0
+                atm = round(current_price / base) * base
+                available_strikes = sorted([atm + (i * base) for i in range(-10, 11)])
+                # Filter negative
+                available_strikes = [s for s in available_strikes if s > 0]
             
             result = {
                 "symbol": symbol,
@@ -315,11 +337,16 @@ class IBKRDataFetcher:
             }
             
             # Limit strikes
-            atm_idx = min(range(len(available_strikes)), 
-                         key=lambda i: abs(available_strikes[i] - current_price))
-            selected_strikes = available_strikes[max(0, atm_idx - strikes):atm_idx + strikes]
+            if available_strikes:
+                atm_idx = min(range(len(available_strikes)), 
+                             key=lambda i: abs(available_strikes[i] - current_price))
+                start_idx = max(0, atm_idx - strikes)
+                end_idx = min(len(available_strikes), atm_idx + strikes + 1)
+                selected_strikes = available_strikes[start_idx:end_idx]
+            else:
+                 selected_strikes = []
             
-            logger.info(f"⚙️ Fetching option chain for {symbol} exp={expiry}, {len(selected_strikes)} strikes")
+            logger.info(f"⚙️ Fetching option chain for {symbol} exp={expiry}, {len(selected_strikes)} strikes. TC={trading_class}")
             
             # Fetch option data for each strike in PARALLEL
             from ib_insync import Option
@@ -330,49 +357,66 @@ class IBKRDataFetcher:
             async def fetch_single_option(strike, right):
                 async with sem:
                     try:
+                        # Specify strict contract details to avoid ambiguity
+                        # Multiplier='100' and Currency='USD' are critical for some tickers (UBER, ARKK)
                         opt_contract = Option(
                             symbol=symbol,
                             lastTradeDateOrContractMonth=expiry,
                             strike=strike,
                             right=right,
                             exchange='SMART',
-                            currency='USD'
+                            currency='USD',
+                            multiplier='100',
+                            tradingClass=trading_class 
                         )
                         
-                        # Qualify and get data
-                        await conn.ib.qualifyContractsAsync(opt_contract)
+                        # 1. Qualify - Filter out invalid/ambiguous strikes quietly
+                        try:
+                            await conn.ib.qualifyContractsAsync(opt_contract)
+                        except Exception:
+                            # logging.getLogger().debug(f"Skipping {symbol} {strike}{right}: {q_e}")
+                            return None
+
+                        # 2. Request Data (Greeks + Volume)
+                        # 101=OpenInterest, 106=ImpliedVol
                         ticker = conn.ib.reqMktData(opt_contract, '101,106', False, False)
                         
-                        # Wait for Greeks (adaptive wait)
+                        # 3. Adaptive Wait for Greeks
                         for _ in range(5):
                             if ticker.modelGreeks or ticker.lastGreeks:
                                 break
                             await asyncio.sleep(0.2)
                         else:
-                            # Final short wait if still missing
-                            await asyncio.sleep(0.2)
+                             await asyncio.sleep(0.2) # Extra small wait if needed
                         
                         greeks = ticker.modelGreeks or ticker.lastGreeks
                         
+                        # 4. Safe Data Extraction
+                        def safe_vol(vol):
+                            if vol is None: return 0
+                            if hasattr(vol, 'real') and math.isnan(vol): return 0
+                            return int(vol)
+
                         option_data = {
                             "strike": strike,
                             "right": right,
+                            "iv": greeks.impliedVol if greeks else 0,
                             "bid": ticker.bid if ticker.bid and ticker.bid > 0 else 0,
                             "ask": ticker.ask if ticker.ask and ticker.ask > 0 else 0,
-                            "last": ticker.last if ticker.last and ticker.last > 0 else 0,
-                            "volume": ticker.volume if ticker.volume else 0,
+                            "volume": safe_vol(ticker.volume),
+                            "open_interest": safe_vol(ticker.callOpenInterest if right == 'C' else ticker.putOpenInterest),
                             "delta": greeks.delta if greeks else 0,
                             "gamma": greeks.gamma if greeks else 0,
                             "theta": greeks.theta if greeks else 0,
                             "vega": greeks.vega if greeks else 0,
-                            "iv": greeks.impliedVol if greeks else 0
                         }
                         
                         conn.ib.cancelMktData(opt_contract)
                         return option_data
                         
                     except Exception as opt_e:
-                        logger.debug(f"Could not fetch {symbol} {strike}{right}: {opt_e}")
+                        # Suppress noise
+                        # logger.debug(f"Could not fetch {symbol} {strike}{right}: {opt_e}")
                         return None
 
             # Create tasks

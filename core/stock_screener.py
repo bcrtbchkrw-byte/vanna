@@ -176,30 +176,36 @@ class StockScreener:
             # We assume data maintenance runs daily so parquet should depend on yesterday.
             # But for live calculation we might need to load parquet and add today's candle?
             # For simplicity/speed in screener, we might rely on cached daily data or simple approximation.
-            # Let's try to get daily features from pipeline/calculator.
+            # 3. Get Daily Features (Technicals)
             daily_features = None
             try:
                 # We need history.
                 df = self._vanna_pipeline.get_training_data([symbol], timeframe='1day')
+                
+                # Check if data is missing/insufficient
+                if df is None or len(df) < 50:
+                    logger.info(f"   ⚠️ {symbol}: Missing history, attempting on-demand download...")
+                    from automation.data_maintenance import get_maintenance_manager
+                    manager = get_maintenance_manager()
+                    
+                    # Download data (this might take 30-60s)
+                    success = await manager.ensure_data_for_symbol(symbol)
+                    
+                    if success:
+                        # Retry loading
+                        df = self._vanna_pipeline.get_training_data([symbol], timeframe='1day')
+                    else:
+                        logger.warning(f"   ❌ {symbol}: Download failed, skipping ML features")
+
+                # Process if we have data now
                 if df is not None and len(df) > 50:
                     df = self._daily_calc.add_technical_features(df)
-                    # Get last row (yesterday's close + indicators)
-                    # Ideally we would update with today's live price, 
-                    # but for screening, yesterday's technicals + live price action is okay?
-                    # Actually LiveFeatureBuilder handles mixing live price with daily features.
-                    # We just need to pass the daily dictionary.
                     row = df.iloc[-1]
                     daily_features = row.to_dict()
-                    # Prefix with 'day_' to match LiveFeatureBuilder expectation if needed?
-                    # LiveFeatureBuilder expects keys like 'day_sma_200'.
-                    # Our calculator produces 'sma_200'.
-                    # We need to rename or LiveFeatureBuilder relies on specific input dict?
-                    # checking LiveFeatureBuilder: it does:
-                    # day_sma_200 = daily_features.get('day_sma_200', ...)
-                    # So we MUST prefix keys.
+                    # Prefix with 'day_' to match LiveFeatureBuilder expectation
                     daily_features = {f"day_{k}": v for k, v in daily_features.items()}
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"   Daily features error for {symbol}: {e}")
 
             # 4. Build All Features
             features = self._feature_builder.build_all_features(
