@@ -201,6 +201,103 @@ class DataMaintenanceManager:
         
         return gaps
     
+    def find_daily_gaps(self, df: pd.DataFrame, max_gap_days: int = 3) -> List[Dict]:
+        """
+        Find gaps in daily data.
+        
+        Args:
+            df: DataFrame with 'timestamp' column (daily data)
+            max_gap_days: Maximum allowed gap (default 3 days for weekends)
+            
+        Returns:
+            List of gap info dicts with start, end, gap_days
+        """
+        if df is None or len(df) < 2:
+            return []
+        
+        df = df.sort_values('timestamp').reset_index(drop=True)
+        gaps = []
+        
+        for i in range(1, len(df)):
+            prev_ts = pd.to_datetime(df.loc[i-1, 'timestamp'])
+            curr_ts = pd.to_datetime(df.loc[i, 'timestamp'])
+            
+            gap_days = (curr_ts - prev_ts).days
+            
+            # More than 3 days gap is suspicious (weekends = 2-3 days)
+            if gap_days > max_gap_days:
+                gaps.append({
+                    'start': prev_ts,
+                    'end': curr_ts,
+                    'gap_days': gap_days
+                })
+        
+        return gaps
+    
+    async def update_daily_data(self, symbol: str) -> bool:
+        """
+        Update daily data for a symbol by fetching latest bars.
+        
+        Args:
+            symbol: Symbol to update
+            
+        Returns:
+            True if successful
+        """
+        try:
+            # Load existing daily data
+            existing_df = self.storage.load_historical_parquet(symbol, '1day')
+            
+            if existing_df is None or len(existing_df) == 0:
+                # No existing data, download full history
+                logger.info(f"   Downloading full 10-year daily data for {symbol}...")
+                daily_df = await self.pipeline.fetch_historical_daily(symbol, years=10)
+                if daily_df is not None:
+                    daily_df = await self.pipeline.fetch_vix_daily(daily_df)
+                    daily_df = self.pipeline.feature_eng.process_all_features(daily_df)
+                    self.storage.save_historical_parquet(daily_df, symbol, '1day')
+                    return True
+                return False
+            
+            # Find last date in existing data
+            existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'])
+            last_date = existing_df['timestamp'].max()
+            
+            # Calculate days to fetch
+            from datetime import datetime, timedelta
+            days_missing = (datetime.now() - last_date).days
+            
+            if days_missing <= 1:
+                logger.info(f"   ✅ {symbol} daily data is up to date")
+                return True
+            
+            logger.info(f"   Fetching {days_missing} days of daily data for {symbol}...")
+            
+            # Fetch recent daily data (last 30 days to be safe)
+            new_df = await self.pipeline.fetch_historical_daily(symbol, years=1)
+            
+            if new_df is None or len(new_df) == 0:
+                return False
+            
+            # Merge with existing
+            new_df['timestamp'] = pd.to_datetime(new_df['timestamp'])
+            merged_df = pd.concat([existing_df, new_df], ignore_index=True)
+            merged_df = merged_df.drop_duplicates(subset=['timestamp'], keep='last')
+            merged_df = merged_df.sort_values('timestamp').reset_index(drop=True)
+            
+            # Re-apply VIX and features
+            merged_df = await self.pipeline.fetch_vix_daily(merged_df)
+            merged_df = self.pipeline.feature_eng.process_all_features(merged_df)
+            
+            # Save
+            self.storage.save_historical_parquet(merged_df, symbol, '1day')
+            logger.info(f"   ✅ Updated {symbol} daily data: {len(merged_df):,} bars")
+            return True
+            
+        except Exception as e:
+            logger.error(f"   ❌ Failed to update daily data for {symbol}: {e}")
+            return False
+    
     async def patch_gaps(
         self,
         symbol: str,
@@ -298,7 +395,7 @@ class DataMaintenanceManager:
         """
         Run full data maintenance.
         
-        Checks all symbols for gaps and patches them.
+        Checks all symbols for gaps in 1min AND 1day data, patches them.
         
         Returns:
             Summary of maintenance results
@@ -312,35 +409,56 @@ class DataMaintenanceManager:
             'symbols_checked': 0,
             'total_gaps_found': 0,
             'gaps_patched': 0,
+            'daily_updated': 0,
             'errors': []
         }
         
         for symbol in self.SYMBOLS:
             try:
                 logger.info(f"\n📊 Checking {symbol}...")
-                
-                # Load data
-                df = self.storage.load_historical_parquet(symbol, '1min')
-                
-                if df is None or len(df) == 0:
-                    logger.warning(f"No data for {symbol}, downloading full history...")
-                    await self.pipeline.process_historical_data(symbol, days=550, save=True)
-                    results['symbols_checked'] += 1
-                    continue
-                
-                # Find gaps
-                gaps = self.find_gaps(df)
                 results['symbols_checked'] += 1
-                results['total_gaps_found'] += len(gaps)
                 
-                if gaps:
-                    logger.warning(f"Found {len(gaps)} gaps in {symbol}")
-                    
-                    # Patch gaps
-                    patched = await self.patch_gaps(symbol, gaps)
-                    results['gaps_patched'] += patched
+                # ============================================
+                # 1. Check 1-MINUTE data
+                # ============================================
+                df_1min = self.storage.load_historical_parquet(symbol, '1min')
+                
+                if df_1min is None or len(df_1min) == 0:
+                    logger.warning(f"   No 1min data for {symbol}, downloading full history...")
+                    await self.pipeline.process_historical_data(symbol, days=550, save=True)
                 else:
-                    logger.info(f"✅ {symbol}: No gaps found ({len(df):,} bars)")
+                    # Find gaps in 1min
+                    gaps = self.find_gaps(df_1min)
+                    results['total_gaps_found'] += len(gaps)
+                    
+                    if gaps:
+                        logger.warning(f"   Found {len(gaps)} gaps in 1min data")
+                        patched = await self.patch_gaps(symbol, gaps)
+                        results['gaps_patched'] += patched
+                    else:
+                        logger.info(f"   ✅ 1min: No gaps ({len(df_1min):,} bars)")
+                
+                # ============================================
+                # 2. Check DAILY data
+                # ============================================
+                df_1day = self.storage.load_historical_parquet(symbol, '1day')
+                
+                if df_1day is None or len(df_1day) == 0:
+                    logger.warning(f"   No 1day data for {symbol}, downloading...")
+                    if await self.update_daily_data(symbol):
+                        results['daily_updated'] += 1
+                else:
+                    # Check if daily data is up to date
+                    df_1day['timestamp'] = pd.to_datetime(df_1day['timestamp'])
+                    last_date = df_1day['timestamp'].max()
+                    days_old = (datetime.now() - last_date).days
+                    
+                    if days_old > 1:
+                        logger.info(f"   Daily data is {days_old} days old, updating...")
+                        if await self.update_daily_data(symbol):
+                            results['daily_updated'] += 1
+                    else:
+                        logger.info(f"   ✅ 1day: Up to date ({len(df_1day):,} bars)")
                 
             except Exception as e:
                 logger.error(f"Error checking {symbol}: {e}")
@@ -351,8 +469,9 @@ class DataMaintenanceManager:
         logger.info("📋 Maintenance Summary")
         logger.info("=" * 60)
         logger.info(f"   Symbols checked: {results['symbols_checked']}")
-        logger.info(f"   Gaps found: {results['total_gaps_found']}")
-        logger.info(f"   Gaps patched: {results['gaps_patched']}")
+        logger.info(f"   1min gaps found: {results['total_gaps_found']}")
+        logger.info(f"   1min gaps patched: {results['gaps_patched']}")
+        logger.info(f"   1day data updated: {results['daily_updated']}")
         if results['errors']:
             logger.warning(f"   Errors: {len(results['errors'])}")
         logger.info("=" * 60)
