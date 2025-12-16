@@ -7,6 +7,7 @@ Split from trading_pipeline.py for better maintainability.
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import asyncio
 
 from core.logger import get_logger
 from analysis.screener import get_daily_screener
@@ -50,13 +51,18 @@ class StockScreener:
         logger.info("📊 Starting morning screening routine...")
         
         # Step 1: Run screener
-        screener_result = await self._screener.run_screen()
+        screener_result = await self._screener.run_morning_screen()
         
-        if not screener_result or not screener_result.get('passed', []):
+        # Original code expects a dict, but run_morning_screen returns a list of symbols (watchlist). 
+        # Wait, let's check analysis/screener.py return type.
+        # analysis/screener.py: returns List[str] (watchlist)
+        
+        # Logic update needed:
+        if not screener_result:
             logger.warning("Screener returned no results, using defaults")
             self._top_50 = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA']
         else:
-            self._top_50 = [s['symbol'] for s in screener_result['passed'][:50]]
+            self._top_50 = screener_result[:50]
         
         logger.info(f"✅ Top 50 selected: {len(self._top_50)} stocks")
         
@@ -84,15 +90,32 @@ class StockScreener:
         
         scores: List[tuple[str, float]] = []
         
-        for symbol in stocks[:50]:
-            try:
-                features = await self._get_stock_features(symbol)
-                if features:
-                    prob = self._predictor.predict(features)
-                    scores.append((symbol, prob))
-                    self._ml_scores[symbol] = prob
-            except Exception as e:
-                logger.debug(f"Could not score {symbol}: {e}")
+        # Parallel processing with Semaphore
+        sem = asyncio.Semaphore(10)  # Limit concurrent feature fetching/scoring
+        
+        async def score_stock(symbol):
+            async with sem:
+                try:
+                    features = await self._get_stock_features(symbol)
+                    if features:
+                        prob = self._predictor.predict(features)
+                        return (symbol, prob)
+                except Exception as e:
+                    logger.debug(f"Could not score {symbol}: {e}")
+                return None
+
+        # Create tasks
+        tasks = [score_stock(s) for s in stocks[:50]]
+        
+        # Run concurrently
+        results = await asyncio.gather(*tasks)
+        
+        # Collect results
+        for res in results:
+            if res:
+                symbol, prob = res
+                scores.append((symbol, prob))
+                self._ml_scores[symbol] = prob
         
         # Sort by probability descending
         scores.sort(key=lambda x: x[1], reverse=True)

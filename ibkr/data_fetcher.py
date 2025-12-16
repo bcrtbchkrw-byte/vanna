@@ -321,11 +321,14 @@ class IBKRDataFetcher:
             
             logger.info(f"⚙️ Fetching option chain for {symbol} exp={expiry}, {len(selected_strikes)} strikes")
             
-            # Fetch option data for each strike
+            # Fetch option data for each strike in PARALLEL
             from ib_insync import Option
             
-            for strike in selected_strikes:
-                for right in ['C', 'P']:
+            # Semaphore to limit concurrent option requests (avoid pacing violation)
+            sem = asyncio.Semaphore(20)  # Max 20 concurrent option data requests
+            
+            async def fetch_single_option(strike, right):
+                async with sem:
                     try:
                         opt_contract = Option(
                             symbol=symbol,
@@ -339,7 +342,15 @@ class IBKRDataFetcher:
                         # Qualify and get data
                         await conn.ib.qualifyContractsAsync(opt_contract)
                         ticker = conn.ib.reqMktData(opt_contract, '101,106', False, False)
-                        await asyncio.sleep(0.5)  # Brief wait for each option
+                        
+                        # Wait for Greeks (adaptive wait)
+                        for _ in range(5):
+                            if ticker.modelGreeks or ticker.lastGreeks:
+                                break
+                            await asyncio.sleep(0.2)
+                        else:
+                            # Final short wait if still missing
+                            await asyncio.sleep(0.2)
                         
                         greeks = ticker.modelGreeks or ticker.lastGreeks
                         
@@ -358,15 +369,28 @@ class IBKRDataFetcher:
                         }
                         
                         conn.ib.cancelMktData(opt_contract)
+                        return option_data
                         
-                        if right == 'C':
-                            result["calls"].append(option_data)
-                        else:
-                            result["puts"].append(option_data)
-                            
                     except Exception as opt_e:
                         logger.debug(f"Could not fetch {symbol} {strike}{right}: {opt_e}")
-                        continue
+                        return None
+
+            # Create tasks
+            tasks = []
+            for strike in selected_strikes:
+                for right in ['C', 'P']:
+                    tasks.append(fetch_single_option(strike, right))
+            
+            # Run all concurrently
+            results = await asyncio.gather(*tasks)
+            
+            # Process results
+            for res in results:
+                if res:
+                    if res['right'] == 'C':
+                        result["calls"].append(res)
+                    else:
+                        result["puts"].append(res)
             
             logger.info(f"✅ Option chain: {len(result['calls'])} calls, {len(result['puts'])} puts")
             return result

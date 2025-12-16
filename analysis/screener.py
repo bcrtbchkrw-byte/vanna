@@ -222,23 +222,41 @@ class DailyOptionsScreener:
         scores: List[StockScore] = []
         fetcher = await self._get_data_fetcher()
         
-        for i, symbol in enumerate(SCREENER_UNIVERSE):
-            try:
-                score = await self._score_stock_ibkr(symbol, fetcher)
+        # Parallel processing with Semaphore
+        # We use a semaphore to limit concurrent stock analysis (which triggers IBKR requests)
+        sem = asyncio.Semaphore(10)  # Max 10 concurrent stocks
+        
+        async def analyze_stock(symbol):
+            async with sem:
+                try:
+                    score = await self._score_stock_ibkr(symbol, fetcher)
+                    return score
+                except Exception as e:
+                    logger.debug(f"  ❌ {symbol}: {e}")
+                    return None
+
+        # Create tasks for all stocks
+        tasks = [analyze_stock(s) for s in SCREENER_UNIVERSE]
+        
+        # Run in chunks to provide progress updates (optional, but good for UX)
+        # Using as_completed or simple chunks. Let's use chunks.
+        chunk_size = 50
+        total = len(tasks)
+        
+        for i in range(0, total, chunk_size):
+            chunk = tasks[i:i + chunk_size]
+            logger.info(f"   Processing stocks {i+1}-{min(i+chunk_size, total)}/{total}...")
+            
+            chunk_results = await asyncio.gather(*chunk)
+            
+            for score in chunk_results:
                 if score and score.passed_earnings and score.passed_liquidity:
                     scores.append(score)
-                    logger.debug(f"  ✅ {symbol}: {score.score:.2f} (IV:{score.iv_rank:.0%}, Vol:{score.options_volume:,})")
-                else:
-                    logger.debug(f"  ❌ {symbol}: {score.reason if score else 'Error'}")
-            except Exception as e:
-                logger.debug(f"  ❌ {symbol}: {e}")
-            
-            # Progress log every 50 stocks
-            if (i + 1) % 50 == 0:
-                logger.info(f"   Progress: {i+1}/{len(SCREENER_UNIVERSE)} stocks screened...")
-            
-            # Rate limiting for IBKR
-            await asyncio.sleep(0.2)
+                    logger.debug(f"  ✅ {score.symbol}: {score.score:.2f} (IV:{score.iv_rank:.0%}, Vol:{score.options_volume:,})")
+                elif score:
+                    logger.debug(f"  ❌ {score.symbol}: {score.reason}")
+        
+        # Rate limiting is handled by Semaphore, explicit sleep removed
         
         # 3. Sort by score and take top N
         scores.sort(key=lambda x: x.score, reverse=True)

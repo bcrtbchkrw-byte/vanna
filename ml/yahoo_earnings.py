@@ -101,6 +101,49 @@ class YahooEarningsFetcher:
         
         return earnings_date
     
+    def get_dividend_yield(self, symbol: str) -> float:
+        """
+        Get annual dividend yield for a symbol (decimal, e.g. 0.015).
+        
+        Args:
+            symbol: Stock ticker
+            
+        Returns:
+            Dividend yield (0.0 if none or unknown)
+        """
+        # Check cache validity
+        if self._is_cache_valid(symbol):
+            cached_yield = self._cache[symbol].get('dividend_yield')
+            if cached_yield is not None:
+                return float(cached_yield)
+        
+        # Fetch from Yahoo
+        div_yield = 0.0
+        if HAS_YFINANCE:
+            try:
+                ticker = yf.Ticker(symbol)
+                info = ticker.info
+                # Try dividendYield (forward) then trailingAnnualDividendYield
+                val = info.get('dividendYield')
+                if val is None:
+                    val = info.get('trailingAnnualDividendYield')
+                
+                if val is not None:
+                    div_yield = float(val)
+                    
+            except Exception as e:
+                logger.debug(f"{symbol}: Yahoo dividend fetch error: {e}")
+        
+        # Update cache (preserve existing data)
+        if symbol not in self._cache:
+            self._cache[symbol] = {}
+        
+        self._cache[symbol]['dividend_yield'] = div_yield
+        self._cache[symbol]['fetched_at'] = datetime.now().isoformat()
+        self._save_cache()
+        
+        return div_yield
+
     def _fetch_from_yahoo(self, symbol: str) -> Optional[date]:
         """Fetch earnings date from Yahoo Finance."""
         if not HAS_YFINANCE:

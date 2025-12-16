@@ -42,6 +42,30 @@ class DailyFeatureCalculator:
 
         logger.info(f"DailyFeatureCalculator initialized (dir: {self.data_dir})")
     
+    def calculate_all(self) -> dict[str, bool]:
+        """
+        Calculate daily features for all available *_1day.parquet files.
+        
+        Returns:
+            Dict mapping symbol -> success
+        """
+        results = {}
+        files = list(self.data_dir.glob("*_1day.parquet"))
+        
+        logger.info(f"Found {len(files)} daily files to process")
+        
+        for p in files:
+            # Extract symbol from filename "SYMBOL_1day.parquet"
+            symbol = p.name.replace("_1day.parquet", "")
+            try:
+                self.calculate_for_symbol(symbol)
+                results[symbol] = True
+            except Exception as e:
+                logger.error(f"Failed to calculate daily features for {symbol}: {e}")
+                results[symbol] = False
+                
+        return results
+    
     def calculate_for_symbol(self, symbol: str) -> Optional[pd.DataFrame]:
         """
         Calculate daily features for a single symbol.

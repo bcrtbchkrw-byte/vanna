@@ -160,7 +160,6 @@ class TradeSuccessPredictor:
             learning_rate=0.1,
             objective='binary:logistic',
             eval_metric='logloss',
-            use_label_encoder=False,
             random_state=42,
             n_jobs=-1
         )
@@ -450,22 +449,33 @@ def create_synthetic_training_data(parquet_path: str) -> pd.DataFrame:
     """
     Create synthetic training labels from historical data.
     
-    Labels based on forward returns:
-    - is_successful = 1 if return_5m > 0 (for long positions)
-    - Adjusts for regime (bull/bear)
+    Labels based on FUTURE returns (avoiding data leakage):
+    - is_successful = 1 if future_return_5m > 0 (for long positions)
     
-    This is a simplified approach - real labels would come from
-    actual trade outcomes.
+    Args:
+        parquet_path: Path to input parquet file
+        
+    Returns:
+        DataFrame with features and 'is_successful' target
     """
     df = pd.read_parquet(parquet_path)
     
-    # Simple labeling: positive forward return = success
-    # (In reality, this would come from actual trade P/L)
-    if 'return_5m' in df.columns:
-        # For puts (negative delta strategies), negative return = success
-        df['is_successful'] = (df['return_5m'] < 0).astype(int)
+    # Calculate FUTURE return (look ahead 5 minutes)
+    # We use 'close' price shifted backwards by 5 periods
+    if 'close' in df.columns:
+        # Future return = (Close[t+5] / Close[t]) - 1
+        df['future_close'] = df['close'].shift(-5)
+        df['future_return_5m'] = (df['future_close'] / df['close']) - 1
+        
+        # Target: Did price go up in next 5 mins?
+        # (In reality, this should match your strategy's profit condition)
+        df['is_successful'] = (df['future_return_5m'] > 0).astype(int)
+        
+        # Drop last 5 rows where future return is unknown (NaN)
+        df = df.dropna(subset=['future_return_5m'])
+        
     else:
-        # Random 50/50 if no return column
+        logger.warning("No 'close' column found, using random labels (fallback)")
         df['is_successful'] = np.random.randint(0, 2, len(df))
     
     return df

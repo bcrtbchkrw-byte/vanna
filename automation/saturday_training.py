@@ -116,8 +116,10 @@ class SaturdayTrainingPipeline:
         logger.info("=" * 50)
         
         from ml.vectorized_greeks import VectorizedGreeksCalculator
+        from ml.yahoo_earnings import get_yahoo_earnings_fetcher
         
         calculator = VectorizedGreeksCalculator()
+        fetcher = get_yahoo_earnings_fetcher()
         symbols_processed = []
         
         # Process all *_1min.parquet files
@@ -126,12 +128,20 @@ class SaturdayTrainingPipeline:
                 continue
             
             output_path = self.data_dir / f"{parquet_file.stem}_vanna.parquet"
+            symbol = parquet_file.stem.split('_')[0]
             
             try:
-                calculator.process_parquet_file(str(parquet_file), str(output_path))
-                symbol = parquet_file.stem.split('_')[0]
+                # Fetch dividend yield
+                div_yield = fetcher.get_dividend_yield(symbol)
+                
+                calculator.process_parquet_file(
+                    str(parquet_file), 
+                    str(output_path),
+                    dividend_yield=div_yield
+                )
+                
                 symbols_processed.append(symbol)
-                logger.info(f"   ✅ {symbol}")
+                logger.info(f"   ✅ {symbol} (div: {div_yield:.2%})")
             except Exception as e:
                 logger.error(f"   ❌ {parquet_file.name}: {e}")
         
@@ -219,20 +229,33 @@ class SaturdayTrainingPipeline:
             
             # Load all vanna data
             dfs = []
+            # Load all vanna data
+            dfs = []
             for f in self.data_dir.glob("*_1min_vanna.parquet"):
-                df = pd.read_parquet(f)
-                dfs.append(df)
+                try:
+                    df = pd.read_parquet(f)
+                    
+                    # Calculate FUTURE return (look ahead 5 minutes) for correct labeling
+                    # Must be done per-file (per-symbol) to avoid cross-symbol shifting
+                    if 'close' in df.columns:
+                        # Future return = (Close[t+5] / Close[t]) - 1
+                        df['future_close'] = df['close'].shift(-5)
+                        df['future_return_5m'] = (df['future_close'] / df['close']) - 1
+                        
+                        # Target: Did price go up in next 5 mins?
+                        df['is_successful'] = (df['future_return_5m'] > 0).astype(int)
+                        
+                        # Drop last 5 rows where future return is unknown
+                        df = df.dropna(subset=['future_return_5m'])
+                        
+                        dfs.append(df)
+                except Exception as e:
+                    logger.warning(f"Skipping {f.name}: {e}")
             
             if dfs:
                 combined = pd.concat(dfs, ignore_index=True)
                 
-                # Create synthetic labels from return_5m
-                # For short puts: negative return = success
-                if 'return_5m' in combined.columns:
-                    combined['is_successful'] = (combined['return_5m'] < 0).astype(int)
-                else:
-                    # Random if no return column
-                    combined['is_successful'] = np.random.randint(0, 2, len(combined))
+                # Old logic removed (was using return_5m)
                 
                 predictor = TradeSuccessPredictor()
                 metrics = predictor.train(combined, target_col='is_successful')
