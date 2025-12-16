@@ -12,7 +12,7 @@ Usage:
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 
 import pandas as pd
 import numpy as np
@@ -585,6 +585,32 @@ class DataMaintenanceManager:
                 
                 merged_df = merged_df.sort_values('timestamp').reset_index(drop=True)
                 
+                # ================================================================
+                # AUTO-FIX VIX NaN VALUES (prevents missing data in parquet)
+                # ================================================================
+                for vix_col in ['vix', 'vix3m']:
+                    if vix_col in merged_df.columns:
+                        nan_before = merged_df[vix_col].isnull().sum()
+                        if nan_before > 0:
+                            merged_df[vix_col] = merged_df[vix_col].ffill().bfill()
+                            # If still NaN after ffill/bfill, use defaults
+                            if vix_col == 'vix':
+                                merged_df[vix_col] = merged_df[vix_col].fillna(18.0)
+                            else:  # vix3m
+                                merged_df[vix_col] = merged_df[vix_col].fillna(
+                                    merged_df['vix'] * 1.05 if 'vix' in merged_df.columns else 19.0
+                                )
+                            nan_after = merged_df[vix_col].isnull().sum()
+                            logger.info(f"   🔧 Fixed {vix_col}: {nan_before} → {nan_after} NaN")
+                
+                # Recalculate vix_percentile if VIX was fixed
+                if 'vix' in merged_df.columns and 'vix_percentile' in merged_df.columns:
+                    if merged_df['vix_percentile'].isnull().any():
+                        merged_df['vix_percentile'] = merged_df['vix'].rolling(
+                            window=20, min_periods=1
+                        ).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False)
+                        logger.info(f"   🔧 Recalculated vix_percentile")
+                
                 # Re-apply feature engineering to fill any missing options data
                 # This ensures options_iv_atm, options_put_call_ratio, options_volume_norm
                 # are estimated from VIX if they're NaN
@@ -741,22 +767,199 @@ class DataMaintenanceManager:
         """Check if today is Saturday (weekday 5 = Saturday)."""
         return datetime.now().weekday() == 5
     
-    async def run_saturday_merge(self) -> Dict[str, int]:
+    async def run_saturday_merge(self) -> Dict[str, Any]:
         """
-        Run Saturday merge job.
+        Run Saturday merge job - FULL PIPELINE.
         
-        Called every Saturday to merge accumulated live data
-        from the trading week into parquet files.
+        Called every Saturday to:
+        1. Merge live data into *_1min.parquet
+        2. Aggregate to daily and add technical indicators
+        3. Recalculate Greeks → *_1min_vanna.parquet
+        4. Inject daily features
+        5. Create *_1min_rl.parquet (for PPO)
+        6. Retrain ML models (optional)
+        7. Retrain PPO (optional)
         
         Returns:
-            Merge results per symbol
+            Summary of all operations
         """
         if not self.should_run_saturday_merge():
             logger.info("⏭️ Not Saturday, skipping merge")
             return {}
         
-        logger.info("🗓️ Saturday detected - running weekly data merge")
-        return await self.merge_live_to_parquet()
+        logger.info("=" * 60)
+        logger.info("🗓️ SATURDAY FULL PIPELINE")
+        logger.info("=" * 60)
+        
+        results = {
+            'merge': {},
+            'daily': {},
+            'greeks': False,
+            'daily_injection': {},
+            'rl_enrichment': {},
+            'ml_training': False,
+            'ppo_training': False,
+        }
+        
+        try:
+            # ================================================================
+            # STEP 1: Merge live data from SQLite into *_1min.parquet
+            # ================================================================
+            logger.info("\n📊 STEP 1: Merging live data to parquet...")
+            results['merge'] = await self.merge_live_to_parquet()
+            
+            # ================================================================
+            # STEP 2: Aggregate to daily and add technical indicators
+            # ================================================================
+            logger.info("\n📅 STEP 2: Aggregating to daily and adding indicators...")
+            results['daily'] = await self._aggregate_to_daily()
+            
+            # Add technical indicators to daily files
+            try:
+                from scripts.add_daily_indicators import add_daily_indicators
+                for symbol in self.SYMBOLS:
+                    daily_path = self.storage.data_dir / f"{symbol}_1day.parquet"
+                    if daily_path.exists():
+                        df = pd.read_parquet(daily_path)
+                        df = add_daily_indicators(df)
+                        df.to_parquet(daily_path, index=False, compression='snappy')
+                logger.info("   ✅ Added technical indicators to daily files")
+            except Exception as e:
+                logger.error(f"   ❌ Failed to add daily indicators: {e}")
+            
+            # ================================================================
+            # STEP 3: Recalculate Greeks → *_1min_vanna.parquet
+            # ================================================================
+            logger.info("\n📐 STEP 3: Recalculating Greeks...")
+            try:
+                await self._recalculate_vanna_parquet()
+                results['greeks'] = True
+                logger.info("   ✅ Greeks recalculated")
+            except Exception as e:
+                logger.error(f"   ❌ Greeks failed: {e}")
+            
+            # ================================================================
+            # STEP 4: Inject daily features into *_1min_vanna.parquet
+            # ================================================================
+            logger.info("\n📥 STEP 4: Injecting daily features...")
+            try:
+                from ml.daily_feature_injector import get_daily_feature_injector
+                injector = get_daily_feature_injector()
+                results['daily_injection'] = injector.inject_all()
+                logger.info(f"   ✅ Injected daily features into {len(results['daily_injection'])} symbols")
+            except Exception as e:
+                logger.error(f"   ❌ Daily injection failed: {e}")
+            
+            # ================================================================
+            # STEP 4.5: Add ML outputs to *_1min_vanna.parquet
+            # ================================================================
+            logger.info("\n🧠 STEP 4.5: Adding ML outputs to vanna files...")
+            try:
+                from ml.feature_enricher import FeatureEnricher
+                enricher = FeatureEnricher()
+                
+                ml_results = {}
+                for symbol in self.SYMBOLS:
+                    vanna_path = self.storage.data_dir / f"{symbol}_1min_vanna.parquet"
+                    if vanna_path.exists():
+                        df = pd.read_parquet(vanna_path)
+                        df = enricher.enrich_dataframe(df)  # Adds ML outputs but no normalization
+                        df.to_parquet(vanna_path, index=False, compression='snappy')
+                        ml_results[symbol] = len(df)
+                
+                results['ml_enrichment'] = ml_results
+                logger.info(f"   ✅ Added ML outputs to {len(ml_results)} vanna files")
+            except Exception as e:
+                logger.error(f"   ❌ ML enrichment failed: {e}")
+            
+            # ================================================================
+            # STEP 5: Create *_1min_rl.parquet (normalized for PPO)
+            # ================================================================
+            logger.info("\n🎯 STEP 5: Creating RL training files (normalized)...")
+            try:
+                from ml.feature_enricher import FeatureEnricher
+                enricher = FeatureEnricher()
+                results['rl_enrichment'] = enricher.process_all()
+                logger.info(f"   ✅ Created {len(results['rl_enrichment'])} RL parquet files")
+            except Exception as e:
+                logger.error(f"   ❌ RL enrichment failed: {e}")
+            
+            # ================================================================
+            # STEP 6: Train ML Models
+            # ================================================================
+            logger.info("\n🧠 STEP 6: Training ML models...")
+            try:
+                # TradeSuccessPredictor - train on synthetic data from parquets
+                from ml.trade_success_predictor import (
+                    get_trade_success_predictor, 
+                    create_synthetic_training_data
+                )
+                
+                predictor = get_trade_success_predictor()
+                
+                # Use SPY as primary training symbol
+                spy_vanna = self.storage.data_dir / "SPY_1min_vanna.parquet"
+                if spy_vanna.exists():
+                    logger.info("   Training TradeSuccessPredictor on SPY data...")
+                    train_df = create_synthetic_training_data(str(spy_vanna))
+                    
+                    if len(train_df) > 1000:
+                        metrics = predictor.train(train_df)
+                        logger.info(f"   ✅ TradeSuccessPredictor trained: AUC={metrics.get('auc', 0):.3f}")
+                    else:
+                        logger.warning(f"   ⚠️ Not enough training data: {len(train_df)} rows")
+                else:
+                    logger.warning("   ⚠️ SPY vanna file not found for ML training")
+                
+                results['ml_training'] = True
+            except Exception as e:
+                logger.warning(f"   ⚠️ ML training failed: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+            
+            # ================================================================
+            # STEP 7: Retrain PPO agent
+            # ================================================================
+            logger.info("\n🤖 STEP 7: Retraining PPO agent...")
+            try:
+                from rl.ppo_agent import TradingAgent, get_available_symbols
+                from rl.vec_env import get_available_symbols
+                
+                symbols = get_available_symbols()
+                if symbols:
+                    logger.info(f"   Found training data for: {symbols}")
+                    
+                    agent = TradingAgent(
+                        verbose=0,  # Quiet mode for automated run
+                        learning_rate=3e-4,
+                        n_steps=2048,
+                        batch_size=64,
+                        n_epochs=10
+                    )
+                    agent.create_env(symbols=symbols)
+                    agent.train(
+                        total_timesteps=50_000,  # Quick weekend training
+                        eval_freq=10_000,
+                        checkpoint_freq=25_000
+                    )
+                    
+                    results['ppo_training'] = True
+                    logger.info("   ✅ PPO agent retrained")
+                else:
+                    logger.warning("   ⚠️ No RL training data found")
+            except Exception as e:
+                logger.warning(f"   ⚠️ PPO training skipped: {e}")
+            
+            logger.info("\n" + "=" * 60)
+            logger.info("✅ SATURDAY PIPELINE COMPLETE")
+            logger.info("=" * 60)
+            
+        except Exception as e:
+            logger.error(f"❌ Saturday pipeline failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+        
+        return results
 
 
 # Singleton

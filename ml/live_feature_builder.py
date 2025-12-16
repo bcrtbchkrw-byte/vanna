@@ -51,16 +51,16 @@ class LiveFeatureBuilder:
         'signal_contango', 'signal_backwardation',
         # Major event features (4)
         'days_to_major_event', 'is_event_week', 'is_event_day', 'event_iv_boost',
-        # Daily features (17)
+        # Daily features (21)
         'day_sma_200', 'day_sma_50', 'day_sma_20',
         'day_price_vs_sma200', 'day_price_vs_sma50',
         'day_rsi_14',
         'day_atr_14', 'day_atr_pct',
-        'day_bb_position',
-        'day_macd', 'day_macd_hist',
+        'day_bb_position', 'day_bb_upper', 'day_bb_lower',  # Bollinger Bands
+        'day_macd', 'day_macd_signal', 'day_macd_hist',  # MACD complete
         'day_above_sma200', 'day_above_sma50',
         'day_sma_50_200_ratio',
-        'day_days_to_major_event', 'day_is_event_week', 'day_event_iv_boost',
+        'day_days_to_major_event', 'day_is_event_week', 'day_is_event_day', 'day_event_iv_boost',
     ]
     
     POSITION_FEATURES = [
@@ -68,9 +68,9 @@ class LiveFeatureBuilder:
         'trade_count', 'bid_ask_spread', 'market_open'
     ]
     
-    N_MARKET_FEATURES = 63
+    N_MARKET_FEATURES = 67
     N_POSITION_FEATURES = 7
-    N_FEATURES = 70
+    N_FEATURES = 74
     
     def __init__(self):
         # History tracking for derived features
@@ -315,13 +315,17 @@ class LiveFeatureBuilder:
         day_atr_14 = daily_features.get('day_atr_14', 0.02)
         day_atr_pct = daily_features.get('day_atr_pct', 0.02)
         day_bb_position = daily_features.get('day_bb_position', 0.5)
+        day_bb_upper = daily_features.get('day_bb_upper', price * 1.02)  # 2% above price
+        day_bb_lower = daily_features.get('day_bb_lower', price * 0.98)  # 2% below price
         day_macd = daily_features.get('day_macd', 0.0)
+        day_macd_signal = daily_features.get('day_macd_signal', 0.0)
         day_macd_hist = daily_features.get('day_macd_hist', 0.0)
         day_above_sma200 = daily_features.get('day_above_sma200', 1)
         day_above_sma50 = daily_features.get('day_above_sma50', 1)
         day_sma_50_200_ratio = daily_features.get('day_sma_50_200_ratio', 1.0)
         day_days_to_major_event = days_to_major_event
         day_is_event_week = is_event_week
+        day_is_event_day = daily_features.get('day_is_event_day', is_event_day)
         day_event_iv_boost = event_iv_boost
         
         # ================================================================
@@ -385,7 +389,7 @@ class LiveFeatureBuilder:
             'is_event_week': is_event_week,
             'is_event_day': is_event_day,
             'event_iv_boost': event_iv_boost,
-            # Daily (17)
+            # Daily (21)
             'day_sma_200': day_sma_200,
             'day_sma_50': day_sma_50,
             'day_sma_20': day_sma_20,
@@ -395,13 +399,17 @@ class LiveFeatureBuilder:
             'day_atr_14': day_atr_14,
             'day_atr_pct': day_atr_pct,
             'day_bb_position': day_bb_position,
+            'day_bb_upper': day_bb_upper,
+            'day_bb_lower': day_bb_lower,
             'day_macd': day_macd,
+            'day_macd_signal': day_macd_signal,
             'day_macd_hist': day_macd_hist,
             'day_above_sma200': day_above_sma200,
             'day_above_sma50': day_above_sma50,
             'day_sma_50_200_ratio': day_sma_50_200_ratio,
             'day_days_to_major_event': day_days_to_major_event,
             'day_is_event_week': day_is_event_week,
+            'day_is_event_day': day_is_event_day,
             'day_event_iv_boost': day_event_iv_boost,
         }
         

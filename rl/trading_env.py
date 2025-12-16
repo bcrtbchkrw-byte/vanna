@@ -55,16 +55,16 @@ class TradingEnvironment(gym.Env):
         'signal_contango', 'signal_backwardation',
         # Major event features (4) - FOMC/CPI for bonds, mega-cap earnings for equities
         'days_to_major_event', 'is_event_week', 'is_event_day', 'event_iv_boost',
-        # Daily features injected from 1day (17) - uses YESTERDAY's data (no lookahead!)
+        # Daily features injected from 1day (21) - uses YESTERDAY's data (no lookahead!)
         'day_sma_200', 'day_sma_50', 'day_sma_20',
         'day_price_vs_sma200', 'day_price_vs_sma50',
         'day_rsi_14',
         'day_atr_14', 'day_atr_pct',
-        'day_bb_position',
-        'day_macd', 'day_macd_hist',
+        'day_bb_position', 'day_bb_upper', 'day_bb_lower',  # Bollinger Bands
+        'day_macd', 'day_macd_signal', 'day_macd_hist',  # MACD complete
         'day_above_sma200', 'day_above_sma50',
         'day_sma_50_200_ratio',
-        'day_days_to_major_event', 'day_is_event_week', 'day_event_iv_boost',
+        'day_days_to_major_event', 'day_is_event_week', 'day_is_event_day', 'day_event_iv_boost',
     ]
     
     # Position features added at runtime (7)
@@ -73,9 +73,9 @@ class TradingEnvironment(gym.Env):
         'trade_count', 'bid_ask_spread', 'market_open'
     ]
     
-    N_MARKET_FEATURES = 63  # Updated: 46 + 17 daily
+    N_MARKET_FEATURES = 67  # Updated: 46 + 21 daily
     N_POSITION_FEATURES = 7
-    N_FEATURES = 70  # 63 market + 7 position
+    N_FEATURES = 74  # 67 market + 7 position
     
     def __init__(
         self,

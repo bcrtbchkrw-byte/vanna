@@ -66,6 +66,10 @@ class VannaDataPipeline:
         self.feature_eng = get_feature_engineering()
         self.storage = get_data_storage(data_dir, db_path)
         
+        # VIX fallback cache (last known values)
+        self._last_vix: float = 18.0  # Default VIX
+        self._last_vix3m: float = 19.0  # Default VIX3M
+        
         self._running = False
         logger.info("VannaDataPipeline initialized")
     
@@ -401,9 +405,24 @@ class VannaDataPipeline:
         results = {}
         timestamp = datetime.now()
         
-        # Get VIX values first
+        # Get VIX values first (with fallback to cached values)
         vix = await self._get_vix_value()
         vix3m = await self._get_vix3m_value()
+        
+        # Use cached values if IBKR returns None
+        if vix is None:
+            vix = self._last_vix
+            logger.warning(f"VIX unavailable, using cached value: {vix:.2f}")
+        else:
+            self._last_vix = vix  # Update cache
+        
+        if vix3m is None:
+            # Estimate from VIX if unavailable (typical contango ~5%)
+            vix3m = vix * 1.05 if vix else self._last_vix3m
+            logger.debug(f"VIX3M unavailable, using estimate: {vix3m:.2f}")
+        else:
+            self._last_vix3m = vix3m  # Update cache
+        
         vix_ratio = vix / vix3m if vix3m and vix3m > 0 else 1.0
         
         # Compute time features
