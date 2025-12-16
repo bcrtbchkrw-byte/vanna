@@ -599,7 +599,7 @@ class DataMaintenanceManager:
                                     merged_df['vix'] * 1.05 if 'vix' in merged_df.columns else 19.0
                                 )
                             nan_after = merged_df[vix_col].isnull().sum()
-                            logger.info(f"   🔧 Fixed {vix_col}: {nan_before} → {nan_after} NaN")
+                            logger.info(f"   🔧 Fixed {vix_col}: filled {nan_before} NaNs (remaining: {nan_after})")
                 
                 # Recalculate vix_percentile if VIX was fixed
                 if 'vix' in merged_df.columns and 'vix_percentile' in merged_df.columns:

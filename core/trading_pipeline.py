@@ -20,6 +20,7 @@ from loguru import logger
 
 # Components
 from analysis.screener import get_daily_screener
+from core.stock_screener import get_stock_screener
 from ml.trade_success_predictor import get_trade_success_predictor
 from ml.regime_classifier import get_regime_classifier
 from rl.ppo_agent import get_trading_agent
@@ -113,7 +114,7 @@ class TradingPipeline:
     
     async def _init_components(self) -> None:
         """Initialize all components."""
-        self._screener = get_daily_screener()
+        self._screener = get_stock_screener()
         self._ml_predictor = get_trade_success_predictor()
         self._regime_classifier = get_regime_classifier()
         self._gemini = get_gemini_client()
@@ -319,31 +320,7 @@ class TradingPipeline:
         logger.info("=" * 70)
         
         # 3. Morning Routine
-        # Only run if within time window or force checked?
-        # Actually run_morning_routine checks time internally or cache logic
-        # But we should try it on startup regardless of time, and let it decide?
-        # Typically morning routine is for 9:30. If we start at 10:00, we missed it?
-        # pipeline._top_10 is empty.
-        
-        # Let's run it. It has logic inside.
-        # Actually it says "Called once at market open (9:30 AM)".
-        # Logic: if already ran today, returns cached.
-        
-        # If we start mid-day, we need top 10.
-        # So we should attempt to populate it.
-        # USER REQUEST: Force download at startup even if market closed ("data se musi stahnout").
         top_10 = await self.run_morning_routine(force=True)
-        if not top_10:
-             # Maybe force re-screen or use fallback?
-             if self._is_market_open():
-                 logger.info("⚠️ No top 10 (perhaps missed morning). Attempting late screen...")
-                 # Force screen?
-                 # Actually run_morning_routine checks time? 
-                 # Looking at implementation: It does NOT check time strictness, only day cache.
-                 # Wait, main loop had time check "if today.hour == 9 and 30 <= today.minute <= 35".
-                 # run_morning_routine() itself doesn't check time, just does work.
-                 # So calling it here is safe.
-                 pass
         
         # 4. Continuous Loop
         logger.info("🔄 Entering continuous trading loop...")
@@ -357,6 +334,7 @@ class TradingPipeline:
         """
         Run morning screening and ML filtering.
         
+        Delegates to StockScreener.
         Called once at market open (9:30 AM).
         
         Args:
@@ -378,81 +356,35 @@ class TradingPipeline:
         
         await self._init_components()
         
-        # Step 1: Screener → Top 50
-        logger.info("\n📊 Step 1: Screener (402 → 50)")
-        self._top_50 = await self._screener.run_morning_screen(force=force)
-        logger.info(f"   Screener selected: {len(self._top_50)} stocks")
-        
-        if len(self._top_50) < 10:
-            logger.error("Not enough stocks passed screening!")
-            return []
-        
-        # Step 2: ML Filter → Top 10
-        logger.info("\n🤖 Step 2: ML Filter (50 → 10)")
-        self._top_10 = await self._ml_filter_top_10(self._top_50)
-        logger.info(f"   ML selected: {self._top_10}")
-        
-        self._last_screen_date = today
-        self._daily_trades = 0
-        
-        logger.info("\n" + "=" * 70)
-        logger.info(f"✅ MORNING COMPLETE - RL will monitor: {self._top_10}")
-        logger.info("=" * 70)
-        
-        return self._top_10
-    
-    async def _ml_filter_top_10(self, stocks: List[str]) -> List[str]:
-        """
-        Use ML to filter Top 50 → Top 10.
-        
-        Uses TradeSuccessPredictor to score each stock.
-        Returns stocks with highest predicted probability.
-        """
-        scored_stocks: List[tuple] = []
-        
-        for symbol in stocks:
-            try:
-                # Get features for prediction
-                features = await self._get_stock_features(symbol)
-                if features is None:
-                    continue
-                
-                # ML prediction
-                prob = self._ml_predictor.predict_proba(features)
-                scored_stocks.append((symbol, prob))
-                
-            except Exception as e:
-                logger.debug(f"ML scoring failed for {symbol}: {e}")
-                continue
-        
-        # Sort by probability and take top 10
-        scored_stocks.sort(key=lambda x: x[1], reverse=True)
-        top_10 = [s[0] for s in scored_stocks[:10]]
-        
-        # Log scores
-        for symbol, prob in scored_stocks[:10]:
-            logger.info(f"   {symbol}: {prob:.1%}")
-        
-        return top_10
-    
-    async def _get_stock_features(self, symbol: str) -> Optional[Dict[str, float]]:
-        """Get features for ML prediction."""
         try:
-            if self._data_fetcher is None:
-                return None
+            # Delegate to StockScreener (handles Step 1 Screener + Step 2 ML Filter)
+            # It now processes in parallel and uses correct features.
+            result = await self._screener.run_morning_screening()
             
-            quote = await self._data_fetcher.get_stock_quote(symbol)
-            vix = await self._data_fetcher.get_vix()
+            self._top_50 = result.top_50
+            self._top_10 = result.top_10
             
-            # Build feature dict (simplified)
-            return {
-                'price': quote.get('last', 0),
-                'volume': quote.get('volume', 0),
-                'vix': vix or 18.0,
-                'symbol': symbol
-            }
-        except Exception:
-            return None
+            if not self._top_10:
+                logger.warning("⚠️ StockScreener returned 0 stocks! Using fallback.")
+                # Fallback to major indices/tech
+                fallback = ['SPY', 'QQQ', 'NVDA', 'AAPL', 'MSFT', 'AMD', 'TSLA', 'AMZN', 'GOOGL', 'META']
+                self._top_10 = fallback[:10]
+                logger.info(f"   Using fallback Top 10: {self._top_10}")
+            
+            self._last_screen_date = today
+            self._daily_trades = 0
+            
+            logger.info("\n" + "=" * 70)
+            logger.info(f"✅ MORNING COMPLETE - RL will monitor: {self._top_10}")
+            logger.info("=" * 70)
+            
+            return self._top_10
+            
+        except Exception as e:
+            logger.error(f"Error in morning routine: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
     
     # =========================================================================
     # RL CONTINUOUS LOOP
@@ -551,7 +483,7 @@ class TradingPipeline:
                 continue
                 
             try:
-                features = await self._get_stock_features(symbol)
+                features = await self._get_live_features(symbol)
                 if features:
                     prob = self._ml_predictor.predict_proba(features)
                     current_scores[symbol] = prob
@@ -576,7 +508,7 @@ class TradingPipeline:
         
         for symbol in candidates[:20]:  # Check first 20 candidates
             try:
-                features = await self._get_stock_features(symbol)
+                features = await self._get_live_features(symbol)
                 if features:
                     prob = self._ml_predictor.predict_proba(features)
                     if prob >= self._min_stock_probability:

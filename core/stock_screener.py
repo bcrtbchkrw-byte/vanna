@@ -8,10 +8,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import asyncio
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from core.logger import get_logger
 from analysis.screener import get_daily_screener
 from ml.trade_success_predictor import get_trade_success_predictor
+from ibkr.data_fetcher import get_data_fetcher
+from ml.live_feature_builder import get_live_feature_builder
+from ml.daily_feature_calculator import get_daily_feature_calculator
+from ml.vanna_data_pipeline import get_vanna_pipeline
 
 logger = get_logger()
 
@@ -37,6 +44,11 @@ class StockScreener:
     def __init__(self):
         self._screener = get_daily_screener()
         self._predictor = get_trade_success_predictor()
+        self._data_fetcher = get_data_fetcher()
+        self._feature_builder = get_live_feature_builder()
+        self._vanna_pipeline = get_vanna_pipeline()
+        self._daily_calc = get_daily_feature_calculator()
+        
         self._top_50: List[str] = []
         self._top_10: List[str] = []
         self._ml_scores: Dict[str, float] = {}
@@ -53,11 +65,6 @@ class StockScreener:
         # Step 1: Run screener
         screener_result = await self._screener.run_morning_screen()
         
-        # Original code expects a dict, but run_morning_screen returns a list of symbols (watchlist). 
-        # Wait, let's check analysis/screener.py return type.
-        # analysis/screener.py: returns List[str] (watchlist)
-        
-        # Logic update needed:
         if not screener_result:
             logger.warning("Screener returned no results, using defaults")
             self._top_50 = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA']
@@ -66,8 +73,16 @@ class StockScreener:
         
         logger.info(f"✅ Top 50 selected: {len(self._top_50)} stocks")
         
+        # Determine VIX once for all stocks
+        vix = await self._data_fetcher.get_vix()
+        if vix is None:
+            logger.warning("Could not fetch VIX, defaulting to 20.0")
+            vix = 20.0
+        
+        logger.info(f"   Using VIX={vix:.2f} for ML filtering")
+
         # Step 2: ML filter to Top 10
-        self._top_10 = await self._ml_filter_top_10(self._top_50)
+        self._top_10 = await self._ml_filter_top_10(self._top_50, vix)
         
         logger.info(f"✅ Top 10 ML filtered: {self._top_10}")
         
@@ -78,7 +93,7 @@ class StockScreener:
             timestamp=datetime.now()
         )
     
-    async def _ml_filter_top_10(self, stocks: List[str]) -> List[str]:
+    async def _ml_filter_top_10(self, stocks: List[str], vix: float) -> List[str]:
         """
         Use ML to filter Top 50 → Top 10.
         
@@ -88,24 +103,35 @@ class StockScreener:
             logger.warning("ML Predictor not available, returning first 10")
             return stocks[:10]
         
+        self._ml_scores.clear()
         scores: List[tuple[str, float]] = []
         
         # Parallel processing with Semaphore
-        sem = asyncio.Semaphore(10)  # Limit concurrent feature fetching/scoring
+        # We need to be careful not to overload IBKR with 50 option request chains
+        # IBKRDataFetcher has its own semaphore (20) for option chains.
+        # But here we also fetch quotes.
+        sem = asyncio.Semaphore(10)  # Limit concurrent full stock analyses
         
         async def score_stock(symbol):
             async with sem:
                 try:
-                    features = await self._get_stock_features(symbol)
+                    features = await self._get_stock_features(symbol, vix)
                     if features:
                         prob = self._predictor.predict(features)
+                        # Log probability for visibility
+                        if prob > 0.5:
+                            logger.info(f"   🎯 {symbol}: {prob:.1%}")
+                        else:
+                            logger.debug(f"   ❌ {symbol}: {prob:.1%}")
                         return (symbol, prob)
+                    else:
+                        logger.debug(f"   ⚠️ {symbol}: No features")
                 except Exception as e:
                     logger.debug(f"Could not score {symbol}: {e}")
                 return None
 
         # Create tasks
-        tasks = [score_stock(s) for s in stocks[:50]]
+        tasks = [score_stock(s) for s in stocks]
         
         # Run concurrently
         results = await asyncio.gather(*tasks)
@@ -128,16 +154,68 @@ class StockScreener:
         
         return top_10
     
-    async def _get_stock_features(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Get features for ML prediction."""
-        # Placeholder - in production, fetch real features
-        return {
-            'symbol': symbol,
-            'vix': 18.0,
-            'return_1d': 0.01,
-            'return_5d': 0.02,
-            'volume_ratio': 1.2,
-        }
+    async def _get_stock_features(self, symbol: str, vix: float) -> Optional[Dict[str, Any]]:
+        """
+        Get features for ML prediction using LiveFeatureBuilder.
+        """
+        try:
+            # 1. Fetch Quote (Price, Volume)
+            quote = await self._data_fetcher.get_stock_quote(symbol)
+            if not quote or not quote.get('last'):
+                return None
+            
+            price = quote['last']
+            
+            # 2. Fetch Options Data (IV, P/C Ratio) - This is the "expensive" part
+            # We can skip it if we want speed and use VIX estimates, but for accuracy we need it.
+            # TradeSuccessPredictor might rely on 'options_iv_atm'.
+            options_data = await self._data_fetcher.get_options_market_data(symbol)
+            
+            # 3. Get Daily Features (Technicals)
+            # Try to load from parquet first (fast), else calculating is hard without history.
+            # We assume data maintenance runs daily so parquet should depend on yesterday.
+            # But for live calculation we might need to load parquet and add today's candle?
+            # For simplicity/speed in screener, we might rely on cached daily data or simple approximation.
+            # Let's try to get daily features from pipeline/calculator.
+            daily_features = None
+            try:
+                # We need history.
+                df = self._vanna_pipeline.get_training_data([symbol], timeframe='1day')
+                if df is not None and len(df) > 50:
+                    df = self._daily_calc.add_technical_features(df)
+                    # Get last row (yesterday's close + indicators)
+                    # Ideally we would update with today's live price, 
+                    # but for screening, yesterday's technicals + live price action is okay?
+                    # Actually LiveFeatureBuilder handles mixing live price with daily features.
+                    # We just need to pass the daily dictionary.
+                    row = df.iloc[-1]
+                    daily_features = row.to_dict()
+                    # Prefix with 'day_' to match LiveFeatureBuilder expectation if needed?
+                    # LiveFeatureBuilder expects keys like 'day_sma_200'.
+                    # Our calculator produces 'sma_200'.
+                    # We need to rename or LiveFeatureBuilder relies on specific input dict?
+                    # checking LiveFeatureBuilder: it does:
+                    # day_sma_200 = daily_features.get('day_sma_200', ...)
+                    # So we MUST prefix keys.
+                    daily_features = {f"day_{k}": v for k, v in daily_features.items()}
+            except Exception:
+                pass
+
+            # 4. Build All Features
+            features = self._feature_builder.build_all_features(
+                symbol=symbol,
+                price=price,
+                vix=vix,
+                quote=quote,
+                options_data=options_data,
+                daily_features=daily_features
+            )
+            
+            return features
+            
+        except Exception as e:
+            logger.debug(f"Error building features for {symbol}: {e}")
+            return None
     
     @property
     def top_50(self) -> List[str]:
@@ -164,3 +242,4 @@ def get_stock_screener() -> StockScreener:
     if _screener is None:
         _screener = StockScreener()
     return _screener
+
