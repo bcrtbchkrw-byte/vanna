@@ -313,14 +313,24 @@ class IBKRDataFetcher:
                 return None
             
             # Get strikes around ATM
+            # CRITICAL FIX: Only use strikes that actually exist in the chain
             if chain.strikes:
+                # 1. Try to find strikes near price (20% range)
                 available_strikes = sorted([s for s in chain.strikes 
                                           if abs(s - current_price) < current_price * 0.2])
+                
+                # 2. If no strikes in 20% range (weird), just take all strikes
+                if not available_strikes:
+                     available_strikes = sorted(list(chain.strikes))
+                     
+                logger.debug(f"Found {len(available_strikes)} valid strikes in chain for {symbol}")
             else:
                 available_strikes = []
 
-            # Fallback: Generate standard strikes if none found
-            if not available_strikes:
+            # Fallback: Generate standard strikes ONLY if chain is completely empty/missing
+            # This avoids "guessing" strikes that don't exist when we have a valid chain
+            if not available_strikes and not chain.strikes:
+                logger.warning(f"No strikes in chain for {symbol}, guessing standard strikes...")
                 import numpy as np
                 base = 1.0 if current_price < 100 else 5.0
                 atm = round(current_price / base) * base
@@ -336,7 +346,7 @@ class IBKRDataFetcher:
                 "puts": []
             }
             
-            # Limit strikes
+            # Limit strikes to requested number (default 10)
             if available_strikes:
                 atm_idx = min(range(len(available_strikes)), 
                              key=lambda i: abs(available_strikes[i] - current_price))
