@@ -327,16 +327,10 @@ class IBKRDataFetcher:
             else:
                 available_strikes = []
 
-            # Fallback: Generate standard strikes ONLY if chain is completely empty/missing
-            # This avoids "guessing" strikes that don't exist when we have a valid chain
-            if not available_strikes and not chain.strikes:
-                logger.warning(f"No strikes in chain for {symbol}, guessing standard strikes...")
-                import numpy as np
-                base = 1.0 if current_price < 100 else 5.0
-                atm = round(current_price / base) * base
-                available_strikes = sorted([atm + (i * base) for i in range(-10, 11)])
-                # Filter negative
-                available_strikes = [s for s in available_strikes if s > 0]
+            # STRICT VALIDATION: If no strikes from IBKR, we DO NOT guess.
+            if not available_strikes:
+                logger.warning(f"No valid strikes returned by IBKR for {symbol}")
+                # Do not invent strikes. Return empty.
             
             result = {
                 "symbol": symbol,
