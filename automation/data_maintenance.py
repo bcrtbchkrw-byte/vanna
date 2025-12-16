@@ -547,6 +547,9 @@ class DataMaintenanceManager:
                     continue
                 
                 live_df['timestamp'] = pd.to_datetime(live_df['timestamp'])
+                # Strip timezone to avoid tz-aware vs tz-naive comparison errors
+                if live_df['timestamp'].dt.tz is not None:
+                    live_df['timestamp'] = live_df['timestamp'].dt.tz_localize(None)
                 logger.info(f"📊 {symbol}: Found {len(live_df):,} live bars")
                 
                 # 2. Load existing parquet
@@ -555,6 +558,9 @@ class DataMaintenanceManager:
                 if parquet_path.exists():
                     existing_df = pd.read_parquet(parquet_path)
                     existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'])
+                    # Strip timezone to avoid tz-aware vs tz-naive comparison errors
+                    if existing_df['timestamp'].dt.tz is not None:
+                        existing_df['timestamp'] = existing_df['timestamp'].dt.tz_localize(None)
                     logger.info(f"   Existing: {len(existing_df):,} bars")
                 else:
                     existing_df = pd.DataFrame()
