@@ -568,17 +568,9 @@ class DataMaintenanceManager:
                 
                 # 3. Merge and deduplicate
                 if not existing_df.empty:
-                    # Get union of all columns (preserve all data)
-                    all_cols = list(set(existing_df.columns) | set(live_df.columns))
-                    
-                    # Add missing columns with NaN
-                    for col in all_cols:
-                        if col not in existing_df.columns:
-                            existing_df[col] = np.nan
-                        if col not in live_df.columns:
-                            live_df[col] = np.nan
-                    
-                    merged_df = pd.concat([existing_df, live_df], ignore_index=True)
+                    # pd.concat automatically aligns columns and fills missing with NaN
+                    # sort=False to preserve order and avoid warning
+                    merged_df = pd.concat([existing_df, live_df], ignore_index=True, sort=False)
                 else:
                     merged_df = live_df
                 
