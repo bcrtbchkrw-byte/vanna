@@ -284,34 +284,33 @@ class TradingPipeline:
 
             if not missing_files:
                 logger.info(f"✅ Found all datasets for {len(required_symbols)} symbols (1min + 1day)")
-                logger.info("⏩ Skipping startup data download & retraining.")
+                logger.info("⏩ Skipping startup data download.")
                 logger.info("   To force update, run 'python3 run_weekend_update.py'")
-                logger.info("=" * 70)
-                return
-            
-            logger.warning(f"⚠️ Missing datasets: {missing_files[:5]}... (Total {len(missing_files)} missing)")
-
-            # 2. Update Data (Only missing symbols - smart download)
-            logger.info("⬇️ Downloading missing historical data...")
-            from automation.data_maintenance import get_maintenance_manager
-            manager = get_maintenance_manager()
-            
-            # ensure_historical_data() only downloads missing symbols
-            await manager.ensure_historical_data()
-            logger.info("✅ Data download complete")
-            
-            # 2. Retrain Model
-            logger.info("🧠 Retraining RL Model...")
-            from rl.ppo_agent import get_trading_agent, get_available_symbols
-            symbols = get_available_symbols()
-            
-            if symbols:
-                agent = get_trading_agent()
-                agent.create_env(symbols=symbols)
-                agent.train(total_timesteps=100_000)
-                logger.info("✅ Model retraining complete")
+                # Don't return! Continue to morning routine and RL loop below
             else:
-                logger.warning("⚠️ No data found for training. Skipping.")
+                logger.warning(f"⚠️ Missing datasets: {missing_files[:5]}... (Total {len(missing_files)} missing)")
+
+                # 2. Update Data (Only missing symbols - smart download)
+                logger.info("⬇️ Downloading missing historical data...")
+                from automation.data_maintenance import get_maintenance_manager
+                manager = get_maintenance_manager()
+                
+                # ensure_historical_data() only downloads missing symbols
+                await manager.ensure_historical_data()
+                logger.info("✅ Data download complete")
+                
+                # 3. Retrain Model
+                logger.info("🧠 Retraining RL Model...")
+                from rl.ppo_agent import get_trading_agent, get_available_symbols
+                symbols = get_available_symbols()
+                
+                if symbols:
+                    agent = get_trading_agent()
+                    agent.create_env(symbols=symbols)
+                    agent.train(total_timesteps=100_000)
+                    logger.info("✅ Model retraining complete")
+                else:
+                    logger.warning("⚠️ No data found for training. Skipping.")
                 
         except Exception as e:
             logger.error(f"❌ Startup maintenance failed: {e}")
