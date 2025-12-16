@@ -198,25 +198,39 @@ class VannaDataStorage:
         """
         filename = f"{symbol}_{timeframe}.parquet"
         
+        # 1. Determine primary path
         if subdir:
             filepath = self.data_dir / subdir / filename
         else:
             filepath = self.data_dir / filename
         
+        # 2. Check existence with intelligent fallbacks
         if not filepath.exists():
-            # If not found in specific subdir, try main dir as fallback (only if subdir was requested)
-            # This allows seamless transition if data was moved
+            # Fallback 1: If looking in subdir, check main dir (seamless migration)
             if subdir and (self.data_dir / filename).exists():
-                 logger.debug(f"File not in {subdir}, checking main dir...")
+                 logger.debug(f"File not in {subdir}, found in main dir...")
                  filepath = self.data_dir / filename
+                 
+            # Fallback 2: If looking in main dir (default), check 'lite_history'
+            # This is critical for on-demand data which is saved to lite_history
+            elif not subdir and (self.data_dir / 'lite_history' / filename).exists():
+                 logger.debug(f"File not in main dir, found in lite_history...")
+                 filepath = self.data_dir / 'lite_history' / filename
+                 
             else:
-                logger.warning(f"Parquet file not found: {filepath}")
+                # Truly not found
+                # Silencing warning for 1day files as they might be downloaded on-demand
+                if timeframe != '1day':
+                    logger.warning(f"Parquet file not found: {filepath}")
                 return None
         
-        df = pd.read_parquet(filepath)
-        logger.debug(f"Loaded {len(df)} bars from {filepath}")
-        
-        return df
+        try:
+            df = pd.read_parquet(filepath)
+            # logger.debug(f"Loaded {len(df)} bars from {filepath}")
+            return df
+        except Exception as e:
+            logger.error(f"Error reading parquet {filepath}: {e}")
+            return None
     
     def save_live_bar(self, bar_data: Dict[str, Any]) -> bool:
         """
