@@ -49,3 +49,4 @@ build/
 *.pem
 *.key
 tws_settings/
+core.*

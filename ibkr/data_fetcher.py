@@ -178,7 +178,7 @@ class IBKRDataFetcher:
         """
         Get aggregate options market data for a symbol.
         
-        Used for live feature construction (put/call ratio, ATM IV, volume).
+        Used for live feature construction (put/call ratio, ATM IV, volume, OI).
         
         Returns:
             Dict with:
@@ -186,12 +186,18 @@ class IBKRDataFetcher:
             - put_call_ratio: Put volume / Call volume
             - volume_norm: Normalized options volume (z-score)
             - total_volume: Raw total options volume
+            - total_call_oi: Total Call Open Interest
+            - total_put_oi: Total Put Open Interest
+            - put_call_oi_ratio: Put OI / Call OI
         """
         defaults = {
             'iv_atm': 0.2,
             'put_call_ratio': 0.8,
             'volume_norm': 0.5,
             'total_volume': 0,
+            'total_call_oi': 0,
+            'total_put_oi': 0,
+            'put_call_oi_ratio': 1.0,
         }
         
         try:
@@ -212,12 +218,13 @@ class IBKRDataFetcher:
                 if atm_call.get('iv') and atm_call['iv'] > 0:
                     atm_iv = atm_call['iv']
             
-            # Calculate put/call volume ratio
+            # Safe extraction helper
             def safe_vol(vol):
                 if vol is None: return 0
                 if hasattr(vol, 'real') and math.isnan(vol): return 0
                 return int(vol)
 
+            # Calculate put/call VOLUME ratio
             total_call_volume = sum(safe_vol(c.get('volume', 0)) for c in chain['calls'])
             total_put_volume = sum(safe_vol(p.get('volume', 0)) for p in chain['puts'])
             total_volume = total_call_volume + total_put_volume
@@ -226,6 +233,15 @@ class IBKRDataFetcher:
                 put_call_ratio = total_put_volume / total_call_volume
             else:
                 put_call_ratio = 1.0  # Default if no call volume
+            
+            # Calculate put/call OPEN INTEREST ratio (NEW)
+            total_call_oi = sum(safe_vol(c.get('open_interest', 0)) for c in chain['calls'])
+            total_put_oi = sum(safe_vol(p.get('open_interest', 0)) for p in chain['puts'])
+            
+            if total_call_oi > 0:
+                put_call_oi_ratio = total_put_oi / total_call_oi
+            else:
+                put_call_oi_ratio = 1.0  # Default if no call OI
             
             # Normalize volume (rough z-score based on typical SPY volume)
             # SPY typically has ~2M options contracts daily
@@ -237,9 +253,12 @@ class IBKRDataFetcher:
                 'put_call_ratio': min(put_call_ratio, 3.0),  # Cap at 3.0
                 'volume_norm': volume_norm,
                 'total_volume': total_volume,
+                'total_call_oi': total_call_oi,
+                'total_put_oi': total_put_oi,
+                'put_call_oi_ratio': min(put_call_oi_ratio, 3.0),  # Cap at 3.0
             }
             
-            logger.info(f"📊 {symbol} Options: IV={atm_iv:.1%}, P/C={put_call_ratio:.2f}, Vol={total_volume:,}")
+            logger.info(f"📊 {symbol} Options: IV={atm_iv:.1%}, P/C Vol={put_call_ratio:.2f}, P/C OI={put_call_oi_ratio:.2f}, OI={total_call_oi+total_put_oi:,}")
             return result
             
         except Exception as e:

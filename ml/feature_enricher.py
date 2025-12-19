@@ -154,6 +154,18 @@ class FeatureEnricher:
             df['event_iv_boost'] = 1.0
             logger.debug("Added placeholder major event features (will be overwritten by daily injection)")
         
+        # ================================================================
+        # 6. Open Interest Features (Ensure existence)
+        # ================================================================
+        if 'total_call_oi' not in df.columns:
+            df['total_call_oi'] = 0.0
+        if 'total_put_oi' not in df.columns:
+            df['total_put_oi'] = 0.0
+        if 'put_call_oi_ratio' not in df.columns:
+            df['put_call_oi_ratio'] = 1.0
+        
+        logger.debug("Added/Verified Open Interest columns")
+        
         logger.info(f"✅ Enriched {n:,} rows with {len(df.columns)} total columns")
         
         return df
@@ -218,6 +230,15 @@ class FeatureEnricher:
             else:
                 df['options_volume_norm'] = 0
             df = df.drop(columns=['options_volume'])
+            
+        # ================================================================
+        # 5. Normalize Open Interest (NEW)
+        # ================================================================
+        # Normalize by dividing by 10,000 (typical contract size chunks)
+        # This keeps values readable (e.g. 15.5) vs z-score which loses absolute scale context
+        for col in ['total_call_oi', 'total_put_oi']:
+            if col in df.columns:
+                df[col] = df[col] / 10000.0
         
         # ================================================================
         # 5. Clip outliers (prevent extreme values)

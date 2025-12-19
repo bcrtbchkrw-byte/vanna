@@ -150,7 +150,7 @@ class IBKRConnection:
         await asyncio.sleep(2)
         return await self.connect()
     
-    def _on_disconnect(self) -> None:
+    def _on_disconnect(self, *args) -> None:
         """Handle disconnection event."""
         logger.warning("⚠️ IBKR connection lost!")
         self._connected = False
@@ -161,6 +161,7 @@ class IBKRConnection:
         ignored_codes = [
             2104, 2106, 2108, 2158,  # Market data farm messages
             10276,  # News feed not allowed (account limitation, not error)
+            200, 300, # Benign "No security definition" or "Can't find EId" warnings
         ]
         if errorCode in ignored_codes:
             return

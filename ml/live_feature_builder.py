@@ -27,37 +27,51 @@ class LiveFeatureBuilder:
     # Import feature list from TradingEnv - Single Source of Truth
     # These MUST match rl/trading_env.py MARKET_FEATURES exactly!
     MARKET_FEATURES = [
-        # Time (6)
+        # Time (9)
         'sin_time', 'cos_time', 'sin_dow', 'cos_dow', 'sin_doy', 'cos_doy',
+        'hour_of_day', 'is_market_open_hour', 'is_lunch_hour',
+        
         # VIX (8)
         'vix_ratio', 'vix_in_contango', 'vix_change_1d', 'vix_change_5d',
         'vix_percentile', 'vix_zscore', 'vix_norm', 'vix3m_norm',
+        
         # Regime (1)
         'regime',
+        
         # Options (3)
         'options_iv_atm', 'options_put_call_ratio', 'options_volume_norm',
-        # Price (5)
+        
+        # Price (11)
         'return_1m', 'return_5m', 'volatility_20', 'momentum_20', 'range_pct',
+        'volume_ratio', 'high_low_range', 'price_acceleration',
+        'return_1m_lag1', 'return_1m_lag5', 'volatility_20_lag1',
+        
         # Greeks (7)
         'delta', 'gamma', 'theta', 'vega', 'vanna', 'charm', 'volga',
+        
         # ML Regime outputs (4)
         'regime_ml', 'regime_adj_position', 'regime_adj_delta', 'regime_adj_dte',
+        
         # ML DTE outputs (2)
         'dte_confidence', 'optimal_dte_norm',
+        
         # ML Trade outputs (1)
         'trade_prob',
+        
         # Binary signals (5)
         'signal_high_prob', 'signal_low_vol', 'signal_crisis',
         'signal_contango', 'signal_backwardation',
+        
         # Major event features (4)
         'days_to_major_event', 'is_event_week', 'is_event_day', 'event_iv_boost',
+        
         # Daily features (21)
         'day_sma_200', 'day_sma_50', 'day_sma_20',
         'day_price_vs_sma200', 'day_price_vs_sma50',
         'day_rsi_14',
         'day_atr_14', 'day_atr_pct',
-        'day_bb_position', 'day_bb_upper', 'day_bb_lower',  # Bollinger Bands
-        'day_macd', 'day_macd_signal', 'day_macd_hist',  # MACD complete
+        'day_bb_position', 'day_bb_upper', 'day_bb_lower',
+        'day_macd', 'day_macd_signal', 'day_macd_hist',
         'day_above_sma200', 'day_above_sma50',
         'day_sma_50_200_ratio',
         'day_days_to_major_event', 'day_is_event_week', 'day_is_event_day', 'day_event_iv_boost',
@@ -68,14 +82,35 @@ class LiveFeatureBuilder:
         'trade_count', 'bid_ask_spread', 'market_open'
     ]
     
-    N_MARKET_FEATURES = 67
+    N_MARKET_FEATURES = 76
     N_POSITION_FEATURES = 7
-    N_FEATURES = 74
+    N_FEATURES = 84  # PPO model was trained with 84 inputs (padding used in env)
+    
+    def to_observation_vector(self, features: Dict[str, float]) -> np.ndarray:
+        """Convert features dict to ordered numpy array for PPO."""
+        obs = []
+        # Market features
+        for key in self.MARKET_FEATURES:
+            obs.append(features.get(key, 0.0))
+        # Position features
+        for key in self.POSITION_FEATURES:
+            obs.append(features.get(key, 0.0))
+            
+        # PADDING to match PPO input size (84)
+        # TradingEnv adds padding if features < N_FEATURES
+        current_len = len(obs)
+        if current_len < self.N_FEATURES:
+            obs.extend([0.0] * (self.N_FEATURES - current_len))
+            
+        return np.array(obs, dtype=np.float32)
     
     def __init__(self):
         # History tracking for derived features
         self._vix_history: List[float] = []
         self._price_history: Dict[str, List[float]] = {}
+        self._volume_history: Dict[str, List[float]] = {}  # NEW: For volume_ratio
+        self._return_history: Dict[str, List[float]] = {}  # NEW: For lagged returns
+        self._volatility_history: Dict[str, List[float]] = {}  # NEW: For lagged volatility
         
         # Lazy-loaded components
         self._regime_classifier = None
@@ -148,7 +183,7 @@ class LiveFeatureBuilder:
             vix3m = vix * 1.05  # Typical slight contango
         
         # ================================================================
-        # TIME FEATURES (6)
+        # TIME FEATURES (6 + 3 NEW)
         # ================================================================
         minutes_of_day = now.hour * 60 + now.minute
         day_of_week = now.weekday()
@@ -160,6 +195,11 @@ class LiveFeatureBuilder:
         cos_dow = math.cos(2 * math.pi * day_of_week / 7)
         sin_doy = math.sin(2 * math.pi * day_of_year / 365)
         cos_doy = math.cos(2 * math.pi * day_of_year / 365)
+        
+        # NEW: Additional time features for Trade Predictor
+        hour_of_day = now.hour
+        is_market_open_hour = 1 if (hour_of_day in [9, 10, 15]) else 0  # First/last hour
+        is_lunch_hour = 1 if hour_of_day == 12 else 0
         
         # ================================================================
         # VIX FEATURES (8)
@@ -187,6 +227,23 @@ class LiveFeatureBuilder:
         # ================================================================
         # REGIME (1) - Using RegimeClassifier
         # ================================================================
+        # NOTE: We calculate regime features here for later use by RegimeClassifier
+        # RegimeClassifier.classify() needs features dict (WITHOUT raw VIX!)
+        regime_features = {
+            'vix_ratio': vix_ratio,
+            'vix_change_1d': vix_change_1d,
+            'vix_zscore': vix_zscore,
+            'return_1m': 0.0,  # Will be filled later
+            'return_5m': 0.0,  # Will be filled later
+            'volatility_20': 0.0,  # Will be filled later
+            'momentum_20': 0.0,  # Will be filled later
+            'volume_ratio': 1.0,  # Will be filled later
+            'high_low_range': 0.02,  # Will be filled later  
+            'price_acceleration': 0.0,  # Will be filled later
+        }
+        
+        # For now, use VIX-based classification (fallback)
+        # After price features are calculated, we can use full ML classification
         regime_result = self._regime_classifier.classify_by_vix(vix)
         regime = regime_result.regime
         
@@ -199,12 +256,20 @@ class LiveFeatureBuilder:
         options_volume_norm = options_data.get('volume_norm', 0.5)
         
         # ================================================================
-        # PRICE FEATURES (5)
+        # PRICE FEATURES (5 + NEW: volume_ratio, high_low_range, price_acceleration, lagged)
         # ================================================================
         if symbol not in self._price_history:
             self._price_history[symbol] = []
+            self._volume_history[symbol] = []
+            self._return_history[symbol] = []
+            self._volatility_history[symbol] = []
         
         prices = self._price_history[symbol]
+        volumes = self._volume_history[symbol]
+        returns_hist = self._return_history[symbol]
+        volatility_hist = self._volatility_history[symbol]
+        
+        # Current return calculations
         return_1m = (price - prices[-1]) / prices[-1] if len(prices) >= 1 and prices[-1] > 0 else 0.0
         return_5m = (price - prices[-5]) / prices[-5] if len(prices) >= 5 and prices[-5] > 0 else 0.0
         
@@ -217,12 +282,44 @@ class LiveFeatureBuilder:
             volatility_20 = vix / 100 * 0.05
             momentum_20 = 0.0
         
+        # High-low range
         range_pct = (quote.get('high', price) - quote.get('low', price)) / price if price > 0 else 0.02
+        high_low_range = range_pct  # Alias for Trade Predictor
         
-        # Update price history
+        # NEW: Volume ratio (current vs 20-bar average)
+        current_volume = quote.get('volume', 0)
+        if len(volumes) >= 20 and current_volume > 0:
+            volume_avg = sum(volumes[-20:]) / 20
+            volume_ratio = current_volume / volume_avg if volume_avg > 0 else 1.0
+        else:
+            volume_ratio = 1.0
+        
+        # NEW: Price acceleration (change in momentum)
+        if len(self._price_history.get(symbol, [])) >= 21:
+            # Calculate previous momentum
+            prev_prices = prices[-21:]
+            prev_momentum = (prev_prices[-2] - prev_prices[-21]) / prev_prices[-21] if prev_prices[-21] > 0 else 0.0
+            price_acceleration = momentum_20 - prev_momentum
+        else:
+            price_acceleration = 0.0
+        
+        # NEW: Lagged features
+        return_1m_lag1 = returns_hist[-1] if len(returns_hist) >= 1 else 0.0
+        return_1m_lag5 = returns_hist[-5] if len(returns_hist) >= 5 else 0.0
+        volatility_20_lag1 = volatility_hist[-1] if len(volatility_hist) >= 1 else 0.2
+        
+        # Update histories
         prices.append(price)
+        volumes.append(current_volume)
+        returns_hist.append(return_1m)
+        volatility_hist.append(volatility_20)
+        
+        # Keep history limited
         if len(prices) > 30:
             self._price_history[symbol] = prices[-30:]
+            self._volume_history[symbol] = volumes[-30:]
+            self._return_history[symbol] = returns_hist[-30:]
+            self._volatility_history[symbol] = volatility_hist[-30:]
         
         # ================================================================
         # GREEKS (7) - Using VannaCalculator
@@ -270,19 +367,63 @@ class LiveFeatureBuilder:
         # ML TRADE OUTPUTS (1) - Using TradeSuccessPredictor
         # ================================================================
         try:
+            # Extract OI features from options_data (NEW)
+            total_call_oi = options_data.get('total_call_oi', 0) / 10000  # Normalize
+            total_put_oi = options_data.get('total_put_oi', 0) / 10000    # Normalize
+            put_call_oi_ratio = options_data.get('put_call_oi_ratio', 1.0)
+            
+            # CRITICAL: Must include ALL features that TradeSuccessPredictor expects!
             trade_features = {
+                # Market/VIX features (7)
                 'vix': vix,
                 'vix_ratio': vix_ratio,
+                'vix_in_contango': vix_in_contango,
+                'vix_change_1d': vix_change_1d,
+                'vix_percentile': vix_percentile,
+                'vix_zscore': vix_zscore,
                 'regime': regime_ml,
+                
+                # Time features (7)
                 'sin_time': sin_time,
                 'cos_time': cos_time,
+                'sin_dow': sin_dow,
+                'cos_dow': cos_dow,
+                'hour_of_day': hour_of_day,
+                'is_market_open_hour': is_market_open_hour,
+                'is_lunch_hour': is_lunch_hour,
+                
+                # Price/momentum features (4)
+                'return_1m': return_1m,
+                'return_5m': return_5m,
+                'volatility_20': volatility_20,
+                'momentum_20': momentum_20,
+                
+                # Lagged features (3)
+                'return_1m_lag1': return_1m_lag1,
+                'return_1m_lag5': return_1m_lag5,
+                'volatility_20_lag1': volatility_20_lag1,
+                
+                # Market microstructure (2)
+                'volume_ratio': volume_ratio,
+                'high_low_range': high_low_range,
+                
+                # Greeks (7)
                 'delta': delta,
+                'gamma': gamma,
+                'theta': theta,
+                'vega': vega,
                 'vanna': vanna,
+                'charm': charm,
                 'volga': volga,
+                
+                # Open Interest (3 NEW features)
+                'total_call_oi': total_call_oi,
+                'total_put_oi': total_put_oi,
+                'put_call_oi_ratio': put_call_oi_ratio,
             }
             trade_prob = self._trade_predictor.predict(trade_features)
         except Exception as e:
-            logger.debug(f"Trade prediction failed: {e}")
+            logger.warning(f"Trade prediction failed: {e}")
             trade_prob = 0.5
         
         # ================================================================
@@ -329,16 +470,20 @@ class LiveFeatureBuilder:
         day_event_iv_boost = event_iv_boost
         
         # ================================================================
-        # BUILD FEATURE DICT IN CORRECT ORDER
+        # CONSTRUCT FINAL DICT
         # ================================================================
         features = {
-            # Time (6)
+            # Time (9)
             'sin_time': sin_time,
             'cos_time': cos_time,
             'sin_dow': sin_dow,
             'cos_dow': cos_dow,
             'sin_doy': sin_doy,
             'cos_doy': cos_doy,
+            'hour_of_day': hour_of_day,
+            'is_market_open_hour': is_market_open_hour,
+            'is_lunch_hour': is_lunch_hour,
+            
             # VIX (8)
             'vix_ratio': vix_ratio,
             'vix_in_contango': vix_in_contango,
@@ -348,18 +493,29 @@ class LiveFeatureBuilder:
             'vix_zscore': vix_zscore,
             'vix_norm': vix_norm,
             'vix3m_norm': vix3m_norm,
+            
             # Regime (1)
-            'regime': regime,
+            'regime': regime_ml,
+            
             # Options (3)
             'options_iv_atm': options_iv_atm,
             'options_put_call_ratio': options_put_call_ratio,
             'options_volume_norm': options_volume_norm,
-            # Price (5)
+            # Note: OI features are used by XGBoost but not sent to PPO directly yet
+            
+            # Price (11)
             'return_1m': return_1m,
             'return_5m': return_5m,
             'volatility_20': volatility_20,
             'momentum_20': momentum_20,
-            'range_pct': range_pct,
+            'range_pct': high_low_range,
+            'volume_ratio': volume_ratio,
+            'high_low_range': high_low_range,
+            'price_acceleration': price_acceleration,
+            'return_1m_lag1': return_1m_lag1,
+            'return_1m_lag5': return_1m_lag5,
+            'volatility_20_lag1': volatility_20_lag1,
+            
             # Greeks (7)
             'delta': delta,
             'gamma': gamma,
@@ -368,28 +524,34 @@ class LiveFeatureBuilder:
             'vanna': vanna,
             'charm': charm,
             'volga': volga,
+            
             # ML Regime (4)
             'regime_ml': regime_ml,
             'regime_adj_position': regime_adj_position,
             'regime_adj_delta': regime_adj_delta,
             'regime_adj_dte': regime_adj_dte,
+            
             # ML DTE (2)
             'dte_confidence': dte_confidence,
             'optimal_dte_norm': optimal_dte_norm,
+            
             # ML Trade (1)
             'trade_prob': trade_prob,
-            # Binary signals (5)
+            
+            # Binary (5)
             'signal_high_prob': signal_high_prob,
             'signal_low_vol': signal_low_vol,
             'signal_crisis': signal_crisis,
             'signal_contango': signal_contango,
             'signal_backwardation': signal_backwardation,
-            # Events (4)
+            
+            # Major Event (4)
             'days_to_major_event': days_to_major_event,
             'is_event_week': is_event_week,
             'is_event_day': is_event_day,
             'event_iv_boost': event_iv_boost,
-            # Daily (21)
+            
+            # Daily Features (21)
             'day_sma_200': day_sma_200,
             'day_sma_50': day_sma_50,
             'day_sma_20': day_sma_20,
@@ -496,8 +658,9 @@ class LiveFeatureBuilder:
         # Combine in correct order
         features = {**market, **position}
         
-        assert len(features) == self.N_FEATURES, \
-            f"Expected {self.N_FEATURES} total features, got {len(features)}"
+        expected_len = self.N_MARKET_FEATURES + self.N_POSITION_FEATURES
+        assert len(features) == expected_len, \
+            f"Expected {expected_len} total features, got {len(features)}"
         
         return features
     

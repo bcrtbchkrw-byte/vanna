@@ -223,6 +223,13 @@ class VectorizedGreeksCalculator:
         
         logger.info(f"   Loaded {len(df):,} rows, {len(df.columns)} columns")
         
+        # CRITICAL: Apply feature engineering BEFORE Greeks calculation
+        # This adds ALL features including new ones (hour_of_day, volume_ratio, etc.)
+        from ml.vanna_feature_engineering import VannaFeatureEngineering
+        feature_eng = VannaFeatureEngineering()
+        df = feature_eng.process_all_features(df)
+        logger.info(f"   Features added: {len(df.columns)} total columns")
+        
         # Add Greeks
         df = self.add_greeks_to_dataframe(df, **kwargs)
         

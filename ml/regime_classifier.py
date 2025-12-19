@@ -57,13 +57,28 @@ class RegimeClassifier:
     }
     
     FEATURES = [
-        'vix', 'vix_ratio', 'vix_change_1d', 'vix_zscore',
-        'return_1m', 'return_5m', 'volatility_20', 'momentum_20'
+        # VIX features (NO raw VIX to prevent data leakage!)
+        'vix_ratio',           # VIX3M / VIX (term structure)
+        'vix_change_1d',       # VIX daily change
+        'vix_zscore',          # VIX z-score over lookback
+        
+        # Price/momentum features
+        'return_1m',           # 1-minute return
+        'return_5m',           # 5-minute return
+        'volatility_20',       # 20-period realized vol
+        'momentum_20',         # 20-period momentum
+        
+        # Market microstructure features (NEW)
+        'volume_ratio',        # Current volume vs 20-period avg
+        'high_low_range',      # (High - Low) / Close
+        'price_acceleration',  # Change in momentum (d(momentum)/dt)
     ]
+    
+    SEQUENCE_LENGTH = 60
     
     def __init__(
         self,
-        model_path: str = "data/models/regime_classifier.pkl"
+        model_path: str = "data/models/regime_classifier"
     ):
         self.model_path = Path(model_path)
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,31 +87,52 @@ class RegimeClassifier:
         self.scaler = None
         
         self._load_model()
-        logger.info("RegimeClassifier initialized")
+        logger.info("RegimeClassifier (LSTM) initialized")
     
     def _load_model(self):
-        """Load trained model if exists."""
-        if self.model_path.exists():
+        """Load trained Keras model if exists."""
+        keras_path = self.model_path / "regime_model.keras"
+        scaler_path = self.model_path / "scaler.pkl"
+        
+        if keras_path.exists():
             try:
-                data = joblib.load(self.model_path)
-                self.model = data['model']
-                self.scaler = data.get('scaler')
-                logger.info(f"Loaded model from {self.model_path}")
+                import tensorflow as tf
+                self.model = tf.keras.models.load_model(str(keras_path))
+                if scaler_path.exists():
+                    self.scaler = joblib.load(scaler_path)
+                logger.info(f"Loaded LSTM model from {keras_path}")
             except Exception as e:
                 logger.warning(f"Could not load model: {e}")
     
-    def classify_by_vix(self, vix: float) -> RegimeResult:
-        """
-        Simple rule-based classification by VIX level.
-        
-        Fallback when no ML model is available.
-        
-        Args:
-            vix: Current VIX level
+    def build_model(self, input_shape):
+        """Build LSTM architecture for classification."""
+        try:
+            import tensorflow as tf
+            from tensorflow.keras import layers, models
+        except ImportError:
+            logger.error("TensorFlow not installed")
+            return None
             
-        Returns:
-            RegimeResult
-        """
+        model = models.Sequential([
+            layers.Input(shape=input_shape),
+            layers.LSTM(64, return_sequences=True, dropout=0.2),
+            layers.LSTM(32, dropout=0.2),
+            layers.Dense(32, activation='relu'),
+            layers.Dropout(0.2),
+            layers.Dense(5, activation='softmax') # 5 classes
+        ])
+        
+        model.compile(
+            optimizer='adam',
+            loss='sparse_categorical_crossentropy',
+            metrics=['accuracy']
+        )
+        
+        self.model = model
+        return model
+
+    def classify_by_vix(self, vix: float) -> RegimeResult:
+        """Fallback rule-based classification."""
         if vix < 15:
             regime = 0
             confidence = 0.9
@@ -120,35 +156,31 @@ class RegimeClassifier:
             probabilities={self.REGIME_NAMES[regime]: confidence}
         )
     
-    def classify(self, features: Dict[str, float]) -> RegimeResult:
+    def classify(self, sequence: np.ndarray) -> RegimeResult:
         """
-        Classify regime using ML model or fallback to VIX rules.
+        Classify regime using LSTM or fallback.
         
         Args:
-            features: Dict with feature values
+            sequence: Array of shape (seq_len, features) or (1, seq_len, features)
+                      If 1D/2D invalid shape is passed, tries to handle or fallback.
             
         Returns:
             RegimeResult
         """
-        vix = features.get('vix', 18)
-        
-        # Use rule-based if no model
+        # Fallback if no model
         if self.model is None:
-            return self.classify_by_vix(vix)
-        
+            # Try to estimate VIX from sequence if possible, otherwise 18
+            return self.classify_by_vix(18.0)
+            
         try:
-            # Prepare features as DataFrame with column names (avoids sklearn warning)
-            feature_values = [[features.get(f, 0) for f in self.FEATURES]]
-            X = pd.DataFrame(feature_values, columns=self.FEATURES)
+            # Ensure shape (1, 60, features)
+            if len(sequence.shape) == 2:
+                sequence = sequence.reshape(1, *sequence.shape)
             
-            if self.scaler:
-                X = self.scaler.transform(X)
+            proba = self.model.predict(sequence, verbose=0)[0]
+            regime = int(np.argmax(proba))
+            confidence = float(proba[regime])
             
-            # Predict
-            regime = int(self.model.predict(X)[0])
-            proba = self.model.predict_proba(X)[0]
-            
-            confidence = float(max(proba))
             probabilities = {
                 self.REGIME_NAMES[i]: float(p)
                 for i, p in enumerate(proba)
@@ -162,84 +194,87 @@ class RegimeClassifier:
             )
             
         except Exception as e:
-            logger.error(f"Classification error: {e}")
-            return self.classify_by_vix(vix)
+            logger.error(f"LSTM Classification error: {e}")
+            return self.classify_by_vix(18.0)
     
     def train(
         self,
-        df: pd.DataFrame,
-        target_col: str = 'regime'
+        data: pd.DataFrame,
+        target_col: str = 'regime_target',
+        test_size: float = 0.2
     ) -> Dict[str, float]:
         """
-        Train the regime classifier.
+        Train the LSTM model.
         
         Args:
-            df: DataFrame with features and regime labels
+            data: DataFrame with features
             target_col: Name of target column
+            test_size: Fraction of data for validation
             
         Returns:
-            Training metrics
+            Metrics dict
         """
-        try:
-            import xgboost as xgb
-            from sklearn.model_selection import train_test_split
-            from sklearn.metrics import accuracy_score, classification_report
-            from sklearn.preprocessing import StandardScaler
-        except ImportError as e:
-            logger.error(f"Missing dependencies: {e}")
-            return {}
+        if self.model is None:
+            # Build model based on feature count
+            input_shape = (self.SEQUENCE_LENGTH, len(self.FEATURES))
+            self.build_model(input_shape=input_shape)
+            
+        import tensorflow as tf
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.model_selection import train_test_split
         
-        # Prepare data
-        available = [f for f in self.FEATURES if f in df.columns]
-        X = df[available].fillna(0)
-        y = df[target_col].astype(int)
+        # Prepare features
+        feature_data = data[self.FEATURES].values
+        targets = data[target_col].values
         
-        logger.info(f"Training on {len(X)} samples, {len(available)} features")
-        
-        # Split
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
-        
-        # Scale
+        # Scale features
         self.scaler = StandardScaler()
-        X_train_scaled = self.scaler.fit_transform(X_train)
-        X_test_scaled = self.scaler.transform(X_test)
+        feature_data_scaled = self.scaler.fit_transform(feature_data)
         
-        # Train XGBoost
-        self.model = xgb.XGBClassifier(
-            n_estimators=100,
-            max_depth=4,
-            learning_rate=0.1,
-            objective='multi:softprob',
-            num_class=5,
-            random_state=42,
-            n_jobs=-1
-        )
-        
-        self.model.fit(X_train_scaled, y_train)
-        
-        # Evaluate
-        y_pred = self.model.predict(X_test_scaled)
-        accuracy = accuracy_score(y_test, y_pred)
-        
-        logger.info(f"Accuracy: {accuracy:.2%}")
-        
-        # Save
-        self._save_model(available)
-        
-        return {'accuracy': accuracy}
+        # Generate sequences
+        X, y = [], []
+        # Need enough data for at least one sequence
+        if len(feature_data_scaled) > self.SEQUENCE_LENGTH:
+            for i in range(self.SEQUENCE_LENGTH, len(feature_data_scaled)):
+                X.append(feature_data_scaled[i-self.SEQUENCE_LENGTH:i])
+                y.append(targets[i])
+            
+            X = np.array(X)
+            y = np.array(y)
+            
+            # Split train/test
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, shuffle=False # Time series!
+            )
+            
+            early_stopping = tf.keras.callbacks.EarlyStopping(
+                monitor='val_loss', patience=5, restore_best_weights=True
+            )
+            
+            history = self.model.fit(
+                X_train, y_train,
+                validation_data=(X_test, y_test),
+                epochs=20,
+                batch_size=64,
+                callbacks=[early_stopping],
+                verbose=1
+            )
+            
+            acc = float(history.history['val_accuracy'][-1])
+            logger.info(f"Model trained. Val Accuracy: {acc:.2%}")
+            
+            self._save_model()
+            return {'accuracy': acc}
+        else:
+            logger.warning("Not enough data for sequence generation")
+            return {'accuracy': 0.0}
     
-    def _save_model(self, feature_names: List[str]):
-        """Save model to disk."""
-        joblib.dump({
-            'model': self.model,
-            'scaler': self.scaler,
-            'features': feature_names,
-            'regime_names': self.REGIME_NAMES
-        }, self.model_path)
-        
-        logger.info(f"Saved model to {self.model_path}")
+    def _save_model(self, feature_names: List[str] = None):
+        """Save Keras model."""
+        self.model.save(self.model_path / "regime_model.keras")
+        if self.scaler:
+            joblib.dump(self.scaler, self.model_path / "scaler.pkl")
+        logger.info(f"Saved LSTM model to {self.model_path}")
     
     def get_strategy_adjustment(self, regime: int) -> Dict[str, float]:
         """

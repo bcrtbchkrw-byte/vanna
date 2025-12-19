@@ -601,9 +601,10 @@ class DataMaintenanceManager:
                 
                 # 3. Merge and deduplicate
                 if not existing_df.empty:
-                    # pd.concat automatically aligns columns and fills missing with NaN
-                    # sort=False to preserve order and avoid warning
-                    merged_df = pd.concat([existing_df, live_df], ignore_index=True, sort=False)
+                    # Filter out empty/all-NA columns to avoid FutureWarning
+                    existing_df = existing_df.dropna(axis=1, how='all')
+                    live_df = live_df.dropna(axis=1, how='all')
+                    merged_df = pd.concat([existing_df, live_df], ignore_index=True)
                 else:
                     merged_df = live_df
                 
@@ -949,6 +950,21 @@ class DataMaintenanceManager:
                 logger.debug(traceback.format_exc())
             
             # ================================================================
+            # STEP 6.5: Train Regime Classifier (LSTM)
+            # ================================================================
+            logger.info("\n🧠 STEP 6.5: Training Regime Classifier (LSTM)...")
+            try:
+                from ml.train_regime_classifier import run_training as train_regime_lstm
+                # Run LSTM training
+                # This handles data loading, sequence generation, and model saving internally
+                lstm_accuracy = train_regime_lstm()
+                logger.info(f"   ✅ RegimeClassifier trained (Acc: {lstm_accuracy:.2%})")
+                results['regime_training'] = True
+            except Exception as e:
+                logger.warning(f"   ⚠️ RegimeClassifier training failed: {e}")
+                # Don't fail the pipeline for this, proceed to PPO
+            
+            # ================================================================
             # STEP 7: Retrain PPO agent
             # ================================================================
             logger.info("\n🤖 STEP 7: Retraining PPO agent...")
@@ -961,17 +977,19 @@ class DataMaintenanceManager:
                     logger.info(f"   Found training data for: {symbols}")
                     
                     agent = TradingAgent(
-                        verbose=0,  # Quiet mode for automated run
+                        verbose=1,  # Show progress
                         learning_rate=3e-4,
                         n_steps=2048,
-                        batch_size=64,
+                        batch_size=128, # Optimized for stability
                         n_epochs=10
                     )
                     agent.create_env(symbols=symbols)
+                    
+                    logger.info("   Starting PPO training (2M steps)...")
                     agent.train(
-                        total_timesteps=50_000,  # Quick weekend training
-                        eval_freq=10_000,
-                        checkpoint_freq=25_000
+                        total_timesteps=2_000_000, 
+                        eval_freq=50_000,
+                        checkpoint_freq=500_000
                     )
                     
                     results['ppo_training'] = True

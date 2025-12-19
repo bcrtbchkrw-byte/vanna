@@ -2,7 +2,7 @@
 Trading Environment for Reinforcement Learning.
 
 Uses REAL historical data from *_rl.parquet files (enriched).
-63 market features + 7 position features = 70 total features.
+77 market features + 7 position features = 84 total features.
 """
 from typing import Any, SupportsFloat, Optional, List
 from pathlib import Path
@@ -22,39 +22,59 @@ class TradingEnvironment(gym.Env):
     
     Loads data from *_1min_rl.parquet files (enriched with ML outputs).
     
-    State: 70 features (63 market + 7 position)
+    State: 84 features (77 market + 7 position)
     Actions: 0=HOLD, 1=OPEN, 2=CLOSE, 3=INCREASE, 4=DECREASE
     """
     
     metadata = {"render_modes": ["human", "ansi"]}
     
-    # Market features from normalized *_rl.parquet (63 total)
+    # Market features from normalized *_rl.parquet (67 → 77 total)
     # NO OHLC, NO timestamp - all normalized/scaled
     MARKET_FEATURES = [
-        # Time (6) - already normalized [-1, 1]
+        # Time (6 + 3 NEW = 9) - already normalized [-1, 1]
         'sin_time', 'cos_time', 'sin_dow', 'cos_dow', 'sin_doy', 'cos_doy',
+        'hour_of_day',  # NEW: 0-23 for time-of-day patterns
+        'is_market_open_hour',  # NEW: 1 if first/last hour (high volatility)
+        'is_lunch_hour',  # NEW: 1 if lunch hour (low volume)
+        
         # VIX (8) - ratios and z-scores, comparable across symbols
         'vix_ratio', 'vix_in_contango', 'vix_change_1d', 'vix_change_5d',
         'vix_percentile', 'vix_zscore', 'vix_norm', 'vix3m_norm',
+        
         # Regime (1)
         'regime',
+        
         # Options (3) - normalized
         'options_iv_atm', 'options_put_call_ratio', 'options_volume_norm',
-        # Price (5) - returns/ratios, already normalized
+        
+        # Price (5 + 5 NEW = 10) - returns/ratios, already normalized
         'return_1m', 'return_5m', 'volatility_20', 'momentum_20', 'range_pct',
+        'volume_ratio',  # NEW: Volume vs 20-bar avg (spot unusual volume)
+        'high_low_range',  # NEW: Alias for range_pct (consistency)
+        'price_acceleration',  # NEW: Change in momentum (trend shifts)
+        'return_1m_lag1',  # NEW: Previous bar return (momentum continuation)
+        'return_1m_lag5',  # NEW: 5 bars ago return (pattern recognition)
+        'volatility_20_lag1',  # NEW: Previous volatility (vol clustering)
+        
         # Greeks (7) - already scale-invariant
         'delta', 'gamma', 'theta', 'vega', 'vanna', 'charm', 'volga',
+        
         # ML Regime outputs (4)
         'regime_ml', 'regime_adj_position', 'regime_adj_delta', 'regime_adj_dte',
+        
         # ML DTE outputs (2) - normalized
         'dte_confidence', 'optimal_dte_norm',
+        
         # ML Trade outputs (1)
         'trade_prob',
+        
         # Binary signals (5) - 0/1
         'signal_high_prob', 'signal_low_vol', 'signal_crisis',
         'signal_contango', 'signal_backwardation',
+        
         # Major event features (4) - FOMC/CPI for bonds, mega-cap earnings for equities
         'days_to_major_event', 'is_event_week', 'is_event_day', 'event_iv_boost',
+        
         # Daily features injected from 1day (21) - uses YESTERDAY's data (no lookahead!)
         'day_sma_200', 'day_sma_50', 'day_sma_20',
         'day_price_vs_sma200', 'day_price_vs_sma50',
@@ -73,9 +93,9 @@ class TradingEnvironment(gym.Env):
         'trade_count', 'bid_ask_spread', 'market_open'
     ]
     
-    N_MARKET_FEATURES = 67  # Updated: 46 + 21 daily
+    N_MARKET_FEATURES = 77  # Updated: 67 + 10 new features
     N_POSITION_FEATURES = 7
-    N_FEATURES = 74  # 67 market + 7 position
+    N_FEATURES = 84  # 77 market + 7 position
     
     def __init__(
         self,
@@ -150,6 +170,11 @@ class TradingEnvironment(gym.Env):
         self.total_pnl = 0.0
         self.trades = 0
         self.winning_trades = 0
+        
+        # NEW: For Sharpe-based reward
+        self.recent_returns = []  # Track last N returns for volatility
+        self.peak_capital = self.initial_capital  # Track max capital for drawdown
+        self.episode_returns = []  # All returns in episode
     
     def _sample_episode_start(self) -> int:
         """Sample random starting point for episode."""
@@ -252,9 +277,9 @@ class TradingEnvironment(gym.Env):
         action: int
     ) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict]:
         """
-        Execute one step.
+        Execute one step with Sharpe-based reward.
         
-        Uses return_1m from data for P/L calculation (no absolute prices needed).
+        Rewards stable, consistent returns over risky gambling.
         """
         reward = 0.0
         terminated = False
@@ -263,54 +288,98 @@ class TradingEnvironment(gym.Env):
         idx = self.episode_start_idx + self.current_step
         idx = min(idx, len(self.df) - 1)
         
-        # Get return from data (already normalized)
+        # CRITICAL FIX: Use FUTURE return to avoid data leakage
+        # Agent should not know current return - it's in observation!
+        future_idx = min(idx + 1, len(self.df) - 1)
+        future_return = self.df.iloc[future_idx].get('return_1m', 0)
+        
+        # Current return for P&L tracking only (not for reward)
         current_return = self.df.iloc[idx].get('return_1m', 0)
+        
+        # Track returns for volatility calculation
+        self.episode_returns.append(current_return)
+        if len(self.recent_returns) >= 20:
+            self.recent_returns.pop(0)
+        self.recent_returns.append(current_return)
         
         # Execute action
         if action == 0:  # HOLD
-            # If in position, accumulate return
             if self.position_size > 0:
+                # Accumulate P&L using current return (for tracking)
                 self.cumulative_pnl += current_return * self.position_size
-                reward = current_return * 10  # Reward based on return
+                
+                # Reward based on FUTURE return (no data leak!)
+                if len(self.recent_returns) > 5:
+                    volatility = np.std(self.recent_returns) + 1e-6
+                    reward = (future_return * 50) - (volatility * 0.2)
+                else:
+                    reward = future_return * 50
             else:
-                reward = -0.001  # Small penalty for doing nothing
+                reward = -0.005  # Small penalty for idle capital
             
         elif action == 1:  # OPEN
             if self.position_size == 0:
                 self.position_size = 1
                 self.entry_step = self.current_step
-                self.cumulative_pnl = 0  # Reset for new position
+                self.cumulative_pnl = 0
                 self.trades += 1
-                reward = 0.01  # Small reward for action
+                reward = 0.01
             else:
-                reward = -0.05  # Penalty for invalid action
+                reward = -0.05  # Invalid action
         
         elif action == 2:  # CLOSE
             if self.position_size > 0:
-                # Final P/L is accumulated return
+                # Calculate P/L
                 profit = self.cumulative_pnl * self.capital * 0.1
-                
                 self.capital += profit
                 self.total_pnl += profit
                 
-                # Improved reward function with risk-adjustment
+                # Update peak capital
+                if self.capital > self.peak_capital:
+                    self.peak_capital = self.capital
+                
+                # Sharpe-based reward
                 hold_time = self.current_step - self.entry_step
-                hold_penalty = -0.001 * hold_time  # Penalize long holds
                 
-                # Base reward proportional to P/L
-                base_reward = self.cumulative_pnl * 15
+                # Volatility penalty
+                if len(self.recent_returns) >= 10:
+                    volatility = np.std(self.recent_returns[-20:])
+                    volatility_penalty = volatility * 0.3
+                else:
+                    volatility_penalty = 0
                 
-                # Sharpe-like adjustment: reward consistency
-                # (higher reward if profit, lower penalty if small loss)
+                # Drawdown penalty
+                drawdown = (self.peak_capital - self.capital) / self.peak_capital if self.peak_capital > 0 else 0
+                drawdown_penalty = drawdown * 2.0
+                
+                # Base reward
+                base_reward = self.cumulative_pnl * 100
+                
+                # Sharpe-like bonus for consistent returns
+                if len(self.recent_returns) >= 10:
+                    mean_ret = np.mean(self.recent_returns[-20:])
+                    std_ret = np.std(self.recent_returns[-20:]) + 1e-6
+                    sharpe_bonus = (mean_ret / std_ret) * 5.0
+                else:
+                    sharpe_bonus = 0
+                
+                # Time penalty (encourage action)
+                time_penalty = 0.005 * hold_time
+                
+                # Final reward
+                reward = (
+                    base_reward 
+                    + sharpe_bonus
+                    - volatility_penalty
+                    - drawdown_penalty
+                    - time_penalty
+                )
+                
+                # Bonus for winning trades
                 if profit > 0:
                     self.winning_trades += 1
-                    # Quick profit bonus
-                    speed_bonus = 0.1 if hold_time < 30 else 0
-                    reward = base_reward + speed_bonus + hold_penalty
-                else:
-                    # Cut losses quickly is better
-                    quick_cut_bonus = 0.05 if hold_time < 60 else 0
-                    reward = base_reward + quick_cut_bonus + hold_penalty
+                    if hold_time < 30:  # Quick profit bonus
+                        reward += 0.2
                 
                 self.position_size = 0
                 self.cumulative_pnl = 0
@@ -343,7 +412,7 @@ class TradingEnvironment(gym.Env):
         
         if self.capital <= 0:
             terminated = True
-            reward = -100
+            reward = -100  # Large penalty for bankruptcy
         
         return self._get_obs(), reward, terminated, truncated, self._get_info()
     

@@ -14,8 +14,37 @@ from stable_baselines3.common.monitor import Monitor
 
 from core.logger import get_logger
 from rl.trading_env import TradingEnvironment
+from gymnasium import spaces
+import numpy as np
 
 logger = get_logger()
+
+
+class LightweightTradingEnv(gym.Env):
+    """
+    Lightweight environment for inference/loading only.
+    Loads NO data, just defines spaces.
+    """
+    def __init__(self, n_features: int = 84):
+        super().__init__()
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(n_features,), dtype=np.float32
+        )
+        self.action_space = spaces.Discrete(5)  # Matches TradingEnvironment
+
+    def reset(self, seed=None, options=None):
+        return np.zeros(self.observation_space.shape, dtype=np.float32), {}
+
+    def step(self, action):
+        obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+        return obs, 0.0, False, False, {}
+
+
+def make_lightweight_env(n_envs: int = 1) -> Callable[[], gym.Env]:
+    """Create lightweight env factory."""
+    def _init():
+        return LightweightTradingEnv()
+    return _init
 
 
 # Single Source of Truth: import from ml.symbols

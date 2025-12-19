@@ -8,15 +8,38 @@ Integrates IBKR, data pipeline, ML models, and trading strategies.
 import asyncio
 import signal
 import sys
+import os
+# CRITICAL STABILITY: Force single-threaded execution for Linear Algebra libs on RPi
+# This MUST occur before numpy/torch are imported.
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import nest_asyncio
 nest_asyncio.apply()
 from loguru import logger
+import faulthandler
+faulthandler.enable()
 
 from config import get_config
 from core.database import get_database
 from core.logger import setup_logger
-from core.trading_pipeline import get_trading_pipeline
+from core.trading_pipeline import TradingPipeline
+from rl.ppo_agent import TradingAgent
+from pathlib import Path
 
+# CRITICAL DEBUG: Try loading PPO here
+try:
+    logger.info("MAIN: Attempting Early PPO Load...")
+    test_agent = TradingAgent(model_path=Path("data/models/ppo_trading_agent"))
+    if test_agent.load():
+        logger.info("MAIN: Early PPO Load SUCCESS!")
+    else:
+        logger.error("MAIN: Early PPO Load FAILED (not found?)")
+except Exception as e:
+    logger.critical(f"MAIN: Early PPO Load CRASHED: {e}")
 
 # Global flag for graceful shutdown
 _shutdown_requested = False
@@ -66,8 +89,12 @@ async def main():
         logger.critical(f"Failed to initialize database: {e}")
         return
 
-    # 5. Start Trading Pipeline
-    pipeline = get_trading_pipeline()
+    # Initialize Pipeline (Pass pre-loaded agent to avoid crash)
+    # pipeline = get_trading_pipeline()
+    pipeline = TradingPipeline(agent=test_agent)
+    
+    # Register Signals
+    loop = asyncio.get_running_loop()
     
     try:
         logger.info(f"📊 Trading Mode: {config.ibkr.trading_mode}")
@@ -82,6 +109,12 @@ async def main():
         logger.info("Keyboard interrupt received")
     except Exception as e:
         logger.critical(f"Fatal error in pipeline: {e}")
+        import traceback
+        if isinstance(e, SystemExit):
+            logger.critical(f"SystemExit caught: {e.code}")
+        logger.debug(traceback.format_exc())
+    except BaseException as e:
+        logger.critical(f"CRITICAL: Uncaught BaseException: {type(e).__name__}: {e}")
         import traceback
         logger.debug(traceback.format_exc())
     finally:

@@ -46,6 +46,9 @@ class VannaFeatureEngineering:
         - Minute of day (0-389 → sin/cos)
         - Day of week (0-4 → sin/cos)
         - Day of year (0-251 → sin/cos for ~252 trading days)
+        - Hour of day (0-23) (NEW)
+        - Market open hour indicator (NEW)
+        - Lunch hour indicator (NEW)
         
         Args:
             df: DataFrame with 'timestamp' column
@@ -83,10 +86,23 @@ class VannaFeatureEngineering:
         df['sin_doy'] = np.sin(2 * np.pi * df['day_of_year'] / 252)
         df['cos_doy'] = np.cos(2 * np.pi * df['day_of_year'] / 252)
         
+        # NEW: Hour of day (0-23)
+        df['hour_of_day'] = df['timestamp'].dt.hour
+        
+        # NEW: Market open hour (first or last hour of trading)
+        # Market is 9:30-16:00, so first hour = 9:00-10:30, last hour = 15:00-16:00
+        df['is_market_open_hour'] = (
+            ((df['hour_of_day'] == 9) | (df['hour_of_day'] == 10)) |  # First hour
+            (df['hour_of_day'] == 15)  # Last hour
+        ).astype(int)
+        
+        # NEW: Lunch hour (12:00-13:00 ET)
+        df['is_lunch_hour'] = (df['hour_of_day'] == 12).astype(int)
+        
         # Clean up intermediate columns
         df = df.drop(columns=['minute_of_day', 'day_of_week', 'day_of_year'], errors='ignore')
         
-        logger.debug(f"Added time features: sin_time, cos_time, sin_dow, cos_dow, sin_doy, cos_doy")
+        logger.debug(f"Added time features: sin_time, cos_time, sin_dow, cos_dow, sin_doy, cos_doy, hour_of_day, is_market_open_hour, is_lunch_hour")
         return df
     
     def add_vix_features(
@@ -274,6 +290,10 @@ class VannaFeatureEngineering:
         - return_5m: 5-minute return
         - volatility_20: 20-bar realized volatility
         - momentum_20: 20-bar momentum
+        - volume_ratio: Volume vs 20-bar average (NEW)
+        - high_low_range: (High - Low) / Close (NEW)
+        - price_acceleration: Change in momentum (NEW)
+        - Lagged features: return_1m_lag1, return_1m_lag5, volatility_20_lag1 (NEW)
         
         Args:
             df: DataFrame with price column
@@ -289,21 +309,42 @@ class VannaFeatureEngineering:
             return df
         
         # Returns
-        df['return_1m'] = df[price_col].pct_change(1).fillna(0)
-        df['return_5m'] = df[price_col].pct_change(5).fillna(0)
+        df['return_1m'] = df[price_col].pct_change(1, fill_method=None).fillna(0)
+        df['return_5m'] = df[price_col].pct_change(5, fill_method=None).fillna(0)
         
         # Realized volatility (annualized)
         df['volatility_20'] = df['return_1m'].rolling(20).std() * np.sqrt(252 * 390)
         df['volatility_20'] = df['volatility_20'].fillna(0.2)  # Default 20%
         
         # Momentum
-        df['momentum_20'] = df[price_col].pct_change(20).fillna(0)
+        df['momentum_20'] = df[price_col].pct_change(20, fill_method=None).fillna(0)
         
         # High-Low range
         if 'high' in df.columns and 'low' in df.columns:
             df['range_pct'] = (df['high'] - df['low']) / df[price_col]
+            # Alias for regime classifier
+            df['high_low_range'] = df['range_pct']
+        else:
+            df['high_low_range'] = 0
         
-        logger.debug("Added price features: return_*, volatility_20, momentum_20")
+        # NEW: Volume ratio (current vs 20-bar average)
+        if 'volume' in df.columns:
+            volume_sma = df['volume'].rolling(20).mean()
+            df['volume_ratio'] = (df['volume'] / volume_sma).fillna(1.0)
+            df['volume_ratio'] = df['volume_ratio'].replace([np.inf, -np.inf], 1.0)
+        else:
+            df['volume_ratio'] = 1.0
+        
+        # NEW: Price acceleration (change in momentum)
+        # This is d(momentum)/dt
+        df['price_acceleration'] = df['momentum_20'].diff().fillna(0)
+        
+        # NEW: Lagged features (capturing historical patterns)
+        df['return_1m_lag1'] = df['return_1m'].shift(1).fillna(0)
+        df['return_1m_lag5'] = df['return_1m'].shift(5).fillna(0)
+        df['volatility_20_lag1'] = df['volatility_20'].shift(1).fillna(0.2)
+        
+        logger.debug("Added price features: return_*, volatility_20, momentum_20, volume_ratio, high_low_range, price_acceleration, lagged features")
         return df
     
     def process_all_features(

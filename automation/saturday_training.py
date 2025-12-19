@@ -58,6 +58,9 @@ class SaturdayTrainingPipeline:
         logger.info("=" * 70)
         
         try:
+            # Step 0: Run Data Maintenance (Patch Gaps)
+            await self._step_run_data_maintenance()
+
             # Step 1: Merge live data
             await self._step_merge_live_data()
             
@@ -94,6 +97,20 @@ class SaturdayTrainingPipeline:
         
         return self.results
     
+    async def _step_run_data_maintenance(self):
+        """Step 0: Run data maintenance (patch gaps)."""
+        logger.info("\n" + "=" * 50)
+        logger.info("🔧 STEP 0: Run Data Maintenance (Patch Gaps)")
+        logger.info("=" * 50)
+        
+        from automation.data_maintenance import get_maintenance_manager
+        
+        manager = get_maintenance_manager()
+        results = await manager.run_maintenance()
+        
+        self.results['maintenance'] = results
+        logger.info(f"✅ Maintenance complete: {results.get('gaps_patched', 0)} gaps patched")
+
     async def _step_merge_live_data(self):
         """Step 1: Merge live SQLite data to parquet."""
         logger.info("\n" + "=" * 50)

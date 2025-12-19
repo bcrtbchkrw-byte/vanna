@@ -78,11 +78,11 @@ async def main():
         logger.info("   Creating environment...")
         agent.create_env(symbols=symbols)
         
-        logger.info("   Starting training (100,000 steps)...")
+        logger.info("   Starting training (2,000,000 steps)...")
         agent.train(
-            total_timesteps=100_000,
-            eval_freq=10_000,
-            checkpoint_freq=50_000
+            total_timesteps=2_000_000,
+            eval_freq=50_000,
+            checkpoint_freq=500_000
         )
         
         logger.info("✅ Model retraining complete!")
