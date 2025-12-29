@@ -119,7 +119,7 @@ class TradingEnvironment(gym.Env):
     
     def __init__(
         self,
-        data_dir: str = "data/vanna_ml",
+        data_dir: str = "data/enriched",
         symbols: List[str] = None,
         initial_capital: float = 10000.0,
         episode_length: int = 390,  # 1 trading day (390 minutes)
@@ -566,7 +566,7 @@ class TradingEnvironment(gym.Env):
 
 
 def make_trading_env(
-    data_dir: str = "data/vanna_ml",
+    data_dir: str = "data/enriched",
     symbols: List[str] = None,
     initial_capital: float = 10000.0,
     episode_length: int = 390

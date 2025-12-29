@@ -34,7 +34,7 @@ class FeatureEnricher:
     - trade_prob: TradeSuccessPredictor probability
     """
     
-    def __init__(self, data_dir: str = "data/vanna_ml"):
+    def __init__(self, data_dir: str = "data/enriched"):
         self.data_dir = Path(data_dir)
         
         # Initialize ML models

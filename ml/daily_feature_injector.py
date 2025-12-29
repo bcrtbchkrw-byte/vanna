@@ -47,7 +47,7 @@ class DailyFeatureInjector:
         'days_to_major_event', 'is_event_week', 'is_event_day', 'event_iv_boost',
     ]
     
-    def __init__(self, data_dir: str = "data/vanna_ml"):
+    def __init__(self, data_dir: str = "data/enriched"):
         self.data_dir = Path(data_dir)
         logger.info(f"DailyFeatureInjector initialized")
     

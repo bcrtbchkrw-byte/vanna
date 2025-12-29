@@ -50,7 +50,7 @@ class VannaDataPipeline:
     
     def __init__(
         self,
-        data_dir: str = "data/vanna_ml",
+        data_dir: str = "data/enriched",
         db_path: str = "data/vanna.db"
     ):
         """

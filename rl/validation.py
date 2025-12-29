@@ -77,7 +77,7 @@ def _validate_cross_symbol(
     from ml.symbols import TRAINING_SYMBOLS
     
     # Load available symbols
-    data_dir = Path("data/vanna_ml")
+    data_dir = Path("data/enriched")
     available_symbols = [
         f.stem.replace("_1min_rl", "")
         for f in data_dir.glob("*_1min_rl.parquet")
@@ -129,7 +129,7 @@ def _validate_walk_forward(
     import pandas as pd
     import shutil
     
-    data_dir = Path("data/vanna_ml")
+    data_dir = Path("data/enriched")
     symbol = "SPY"
     
     rl_path = data_dir / f"{symbol}_1min_rl.parquet"
@@ -147,7 +147,7 @@ def _validate_walk_forward(
         logger.info(f"   Test data: {len(test_df):,} rows (last 50%)")
     
     # Create temp test data
-    temp_dir = Path("data/vanna_ml/temp_walk_forward")
+    temp_dir = Path("data/enriched/temp_walk_forward")
     temp_dir.mkdir(exist_ok=True)
     temp_path = temp_dir / f"{symbol}_1min_rl.parquet"
     test_df.to_parquet(temp_path, index=False)

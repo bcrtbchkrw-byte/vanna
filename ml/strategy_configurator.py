@@ -36,33 +36,7 @@ logger = logging.getLogger(__name__)
 # ENUMS & DATA STRUCTURES
 # =============================================================================
 
-class Strategy(Enum):
-    """Podporované strategie."""
-    CASH = "CASH"
-    # Premium selling (theta positive) - HIGH WIN RATE
-    IRON_CONDOR = "IRON_CONDOR"
-    PUT_CREDIT_SPREAD = "PUT_CREDIT_SPREAD"
-    CALL_CREDIT_SPREAD = "CALL_CREDIT_SPREAD"
-    SHORT_STRANGLE = "SHORT_STRANGLE"
-    IRON_BUTTERFLY = "IRON_BUTTERFLY"
-    # Premium buying (theta negative) - LOW WIN RATE, HIGH REWARD
-    LONG_STRADDLE = "LONG_STRADDLE"
-    LONG_STRANGLE = "LONG_STRANGLE"
-    # Directional spreads
-    BULL_CALL_SPREAD = "BULL_CALL_SPREAD"
-    BEAR_PUT_SPREAD = "BEAR_PUT_SPREAD"
-    BULL_PUT_SPREAD = "BULL_PUT_SPREAD"  # = PUT_CREDIT_SPREAD
-    BEAR_CALL_SPREAD = "BEAR_CALL_SPREAD"  # = CALL_CREDIT_SPREAD
-
-
-class LegType(Enum):
-    BUY = "BUY"
-    SELL = "SELL"
-
-
-class OptionRight(Enum):
-    CALL = "CALL"
-    PUT = "PUT"
+from ml.enums import Strategy, LegType, OptionRight
 
 
 @dataclass

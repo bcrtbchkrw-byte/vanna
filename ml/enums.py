@@ -113,6 +113,15 @@ class Strategy(Enum):
     COVERED_CALL = "COVERED_CALL"
     CASH_SECURED_PUT = "CASH_SECURED_PUT"
     
+    # Aliases for backward compatibility (used in strategy_advisor.py)
+    BUY_CALL = "BUY_CALL"           # Same as LONG_CALL
+    BUY_PUT = "BUY_PUT"             # Same as LONG_PUT  
+    SELL_PUT = "SELL_PUT"           # Same as SHORT_PUT/CASH_SECURED_PUT
+    SELL_CALL = "SELL_CALL"         # Same as SHORT_CALL
+    CALL_SPREAD = "CALL_SPREAD"     # Generic call spread
+    PUT_SPREAD = "PUT_SPREAD"       # Generic put spread
+    STRADDLE = "STRADDLE"           # Generic straddle (use LONG_STRADDLE or SHORT_STRADDLE)
+    
     @property
     def is_credit(self) -> bool:
         """Is this a credit (premium selling) strategy?"""

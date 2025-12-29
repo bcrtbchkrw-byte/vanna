@@ -14,33 +14,11 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass
-from enum import Enum
 
 from core.logger import get_logger
+from ml.enums import MarketRegime, Strategy
 
 logger = get_logger()
-
-
-class MarketRegime(Enum):
-    """Market regime classification."""
-    CALM = 0        # VIX < 15, low vol, trend market
-    NORMAL = 1      # VIX 15-20, normal conditions
-    ELEVATED = 2    # VIX 20-25, increased uncertainty
-    HIGH_VOL = 3    # VIX 25-35, high volatility
-    CRISIS = 4      # VIX > 35, market panic
-
-
-class Strategy(Enum):
-    """Available trading strategies."""
-    CASH = "CASH"               # No trade, wait
-    BUY_CALL = "BUY_CALL"       # Long call
-    BUY_PUT = "BUY_PUT"         # Long put
-    SELL_PUT = "SELL_PUT"       # Short put (theta harvest)
-    SELL_CALL = "SELL_CALL"     # Covered call / short call
-    CALL_SPREAD = "CALL_SPREAD" # Bull call spread
-    PUT_SPREAD = "PUT_SPREAD"   # Bear put spread
-    IRON_CONDOR = "IRON_CONDOR" # Neutral, sell premium
-    STRADDLE = "STRADDLE"       # Long volatility
 
 
 @dataclass

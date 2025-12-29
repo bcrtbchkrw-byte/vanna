@@ -79,52 +79,10 @@ except ImportError:
 
 
 # =============================================================================
-# ENUMS (použij z strategy_advisor pokud dostupný, jinak fallback)
+# ENUMS (import from central ml/enums.py)
 # =============================================================================
 
-if not HAS_STRATEGY_ADVISOR:
-    class MarketRegime(Enum):
-        """Market regime classification (fallback)."""
-        CALM = 0        # VIX < 15
-        NORMAL = 1      # VIX 15-20
-        ELEVATED = 2    # VIX 20-25
-        HIGH_VOL = 3    # VIX 25-35
-        CRISIS = 4      # VIX > 35
-
-
-class Strategy(Enum):
-    """Trading strategies."""
-    CASH = "CASH"
-    IRON_CONDOR = "IRON_CONDOR"
-    PUT_CREDIT_SPREAD = "PUT_CREDIT_SPREAD"
-    CALL_CREDIT_SPREAD = "CALL_CREDIT_SPREAD"
-    BULL_PUT_SPREAD = "BULL_PUT_SPREAD"
-    BEAR_CALL_SPREAD = "BEAR_CALL_SPREAD"
-    # From strategy_advisor
-    BUY_CALL = "BUY_CALL"
-    BUY_PUT = "BUY_PUT"
-    SELL_PUT = "SELL_PUT"
-    SELL_CALL = "SELL_CALL"
-    CALL_SPREAD = "CALL_SPREAD"
-    PUT_SPREAD = "PUT_SPREAD"
-    STRADDLE = "STRADDLE"
-
-
-class DTEBucket(Enum):
-    """DTE bucket classification."""
-    ZERO_DTE = 0    # 0 DTE
-    WEEKLY = 1      # 1-7 DTE
-    MONTHLY = 2     # 8-45 DTE
-    LEAPS = 3       # 46+ DTE
-
-
-class Action(Enum):
-    """Trade actions."""
-    HOLD = "HOLD"
-    OPEN = "OPEN"
-    CLOSE = "CLOSE"
-    ROLL = "ROLL"
-    EMERGENCY_CLOSE = "EMERGENCY_CLOSE"
+from ml.enums import MarketRegime, Strategy, DTEBucket, Action
 
 
 # =============================================================================

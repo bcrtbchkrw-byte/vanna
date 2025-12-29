@@ -18,7 +18,7 @@ from pathlib import Path
 def repair_parquet_files():
     """Repair all parquet files with missing data."""
     
-    data_dir = Path('data/vanna_ml')
+    data_dir = Path('data/enriched')
     
     if not data_dir.exists():
         print(f"❌ Directory not found: {data_dir}")

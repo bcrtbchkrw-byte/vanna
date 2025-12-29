@@ -29,7 +29,7 @@ class DailyFeatureCalculator:
     - price_vs_sma200 (ratio)
     """
     
-    def __init__(self, data_dir: str = "data/vanna_ml"):
+    def __init__(self, data_dir: str = "data/enriched"):
         self.data_dir = Path(data_dir)
         
         # Initialize earnings fetcher

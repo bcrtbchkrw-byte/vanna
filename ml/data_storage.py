@@ -31,7 +31,7 @@ class VannaDataStorage:
     
     def __init__(
         self,
-        data_dir: str = "data/vanna_ml",
+        data_dir: str = "data/enriched",
         db_path: str = "data/vanna.db"
     ):
         """
@@ -461,7 +461,7 @@ _data_storage: Optional[VannaDataStorage] = None
 
 
 def get_data_storage(
-    data_dir: str = "data/vanna_ml",
+    data_dir: str = "data/enriched",
     db_path: str = "data/vanna.db"
 ) -> VannaDataStorage:
     """Get or create singleton data storage."""

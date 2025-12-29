@@ -616,7 +616,7 @@ if __name__ == "__main__":
     print("TradeSuccessPredictor Training (Multi-Symbol)")
     print("=" * 60)
     
-    data_dir = Path("data/vanna_ml")
+    data_dir = Path("data/enriched")
     files = list(data_dir.glob("*_1min_vanna.parquet"))
     
     if not files:

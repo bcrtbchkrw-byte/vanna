@@ -53,7 +53,7 @@ from ml.symbols import TRAINING_SYMBOLS as DEFAULT_SYMBOLS
 
 def make_env(
     symbol: str,
-    data_dir: str = "data/vanna_ml",
+    data_dir: str = "data/enriched",
     initial_capital: float = 10000.0,
     episode_length: int = 390,
     rank: int = 0,
@@ -90,7 +90,7 @@ def make_env(
 
 def make_vec_env(
     symbols: List[str] = None,
-    data_dir: str = "data/vanna_ml",
+    data_dir: str = "data/enriched",
     initial_capital: float = 10000.0,
     episode_length: int = 390,
     n_envs_per_symbol: int = 1,
@@ -169,7 +169,7 @@ def make_vec_env(
     return vec_env
 
 
-def get_available_symbols(data_dir: str = "data/vanna_ml") -> List[str]:
+def get_available_symbols(data_dir: str = "data/enriched") -> List[str]:
     """
     Get list of symbols that have RL training data (*_1min_rl.parquet).
     

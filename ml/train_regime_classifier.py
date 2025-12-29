@@ -114,7 +114,7 @@ def run_training() -> float:
     logger.info("RegimeClassifier Training (Smart Labeling)")
     logger.info("=" * 60)
     
-    data_dir = Path("data/vanna_ml")
+    data_dir = Path("data/enriched")
     files = list(data_dir.glob("*_1min_vanna.parquet"))
     
     if not files:

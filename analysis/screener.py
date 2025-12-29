@@ -59,24 +59,7 @@ except ImportError:
 # ENUMS
 # =============================================================================
 
-class MarketRegime(Enum):
-    CALM = 0        # VIX < 15
-    NORMAL = 1      # VIX 15-20
-    ELEVATED = 2    # VIX 20-25
-    HIGH_VOL = 3    # VIX 25-35
-    CRISIS = 4      # VIX > 35
-
-
-class Strategy(Enum):
-    CASH = "CASH"
-    IRON_CONDOR = "IRON_CONDOR"
-    PUT_CREDIT_SPREAD = "PUT_CREDIT_SPREAD"
-    CALL_CREDIT_SPREAD = "CALL_CREDIT_SPREAD"
-    BULL_CALL_SPREAD = "BULL_CALL_SPREAD"
-    BEAR_PUT_SPREAD = "BEAR_PUT_SPREAD"
-    SHORT_STRANGLE = "SHORT_STRANGLE"
-    LONG_STRADDLE = "LONG_STRADDLE"
-    LONG_STRANGLE = "LONG_STRANGLE"
+from ml.enums import MarketRegime, Strategy
 
 
 # =============================================================================

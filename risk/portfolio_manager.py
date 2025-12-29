@@ -14,7 +14,7 @@ from datetime import datetime
 
 from config import get_config
 from ibkr.data_fetcher import get_data_fetcher
-from ml.vanna_calculator import get_vanna_calculator
+from greeks.greeks_engine import GreeksEngine
 
 class PortfolioManager:
     """
@@ -28,7 +28,7 @@ class PortfolioManager:
     def __init__(self):
         self.config = get_config()
         self.data_fetcher = get_data_fetcher()
-        self.vanna_calc = get_vanna_calculator()
+        self.greeks_engine = GreeksEngine()
         self.spy_history: Optional[pd.DataFrame] = None
         self.beta_cache: Dict[str, float] = {}
         
@@ -144,25 +144,19 @@ class PortfolioManager:
             # if we absolutely have no data.
             sigma = 0.4 
             
-            # Calculate using American Model (CRR) by default for robustness
-            # (Most IBKR equity options are American)
-            greeks = self.vanna_calc.calculate_greeks_american(
+            # Calculate delta using GreeksEngine
+            is_call = option_type == 'call'
+            delta = self.greeks_engine.delta(
                 S=under_price,
                 K=K,
                 T=T,
+                r=0.05,  # Default risk-free rate
+                q=0.0,   # Default dividend yield
                 sigma=sigma,
-                option_type=option_type
+                is_call=is_call
             )
             
-            if greeks:
-                return greeks.delta
-            
-            # Fallback to Black-Scholes if American fails (e.g. T=0)
-            greeks_bs = self.vanna_calc.calculate_all_greeks(
-                S=under_price, K=K, T=T, sigma=sigma, option_type=option_type
-            )
-            if greeks_bs:
-                return greeks_bs.delta
+            return delta
                 
             return 1.0 # Fail safe (worst case for stock/ITM) or 0.0?
             
@@ -293,35 +287,15 @@ class PortfolioManager:
                  direction = -1.0 # Short delta
             
             # Calculate REAL delta for this theoretical contract
-            greeks = self.vanna_calc.calculate_greeks_american(
-                S=price, K=K, T=T, sigma=sigma, option_type=option_type
+            is_call = option_type == 'call'
+            raw_delta = self.greeks_engine.delta(
+                S=price, K=K, T=T, r=0.05, q=0.0, sigma=sigma, is_call=is_call
             )
             
-            if greeks:
+            if raw_delta is not None:
                 # If we are selling the option (Credits), we flip the sign of the option delta.
                 # Put Delta is negative. Short Put Delta is Positive.
                 # Call Delta is positive. Short Call Delta is Negative.
-                # We want the resulting position delta.
-                
-                # Standard Logic: 
-                # OPEN (Bullish) -> Short Put. 
-                # greeks.delta for Put is negative (e.g. -0.3).
-                # Shorting it gives +0.3.
-                
-                # OPEN (Bearish) -> Long Put? or Short Call?
-                # Let's assume Long Put for bearish.
-                # greeks.delta for Put is negative. Position is negative.
-                
-                # Let's align with signal.action "OPEN" (usually Bullish/Long in this bot?)
-                # If signal.action is just "OPEN", we check 'sentiment' or assume Bullish if not specified?
-                # The TradeSignal usually has 'action' as OPEN/CLOSE. Direction implied by... features?
-                # Actually pipeline.py maps 0:HOLD, 1:OPEN, 2:CLOSE.
-                # It doesn't specify Long/Short.
-                # Usually purely Long/Short strategy determines this.
-                # Let's assume OPEN = Bullish (default) for now, or check generic "OPEN" logic.
-                # For safety, we treat it as adding Positive Delta (Long Market).
-                
-                raw_delta = greeks.delta
                 
                 # If Bullish (Short Put)
                 if direction > 0:

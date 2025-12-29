@@ -311,7 +311,7 @@ class LiveFeatureCalculator:
         
         # Auto-detect path
         if parquet_path is None:
-            data_dir = Path("data/vanna_ml")
+            data_dir = Path("data/enriched")
             candidates = [
                 data_dir / f"{self.symbol}_1min_features.parquet",
                 data_dir / f"{self.symbol}_1min_vanna.parquet",
@@ -1152,7 +1152,7 @@ def create_live_calculator(symbol: str,
     
     # Load historical data
     from pathlib import Path
-    data_dir = Path("data/vanna_ml")
+    data_dir = Path("data/enriched")
     
     history_df = None
     
@@ -1304,7 +1304,7 @@ print(calc.get_warmup_status())
 
 import pandas as pd
 
-df = pd.read_parquet('data/vanna_ml/SPY_1min.parquet')
+df = pd.read_parquet('data/enriched/SPY_1min.parquet')
 df = df.tail(500)  # Last 500 bars
 
 calc = LiveFeatureCalculator(symbol='SPY')

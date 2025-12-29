@@ -578,7 +578,7 @@ class IndexEarningsFeatures:
 # INTEGRATION WITH SATURDAY TRAINING
 # =============================================================================
 
-def add_earnings_to_training_data(data_dir: str = "data/vanna_ml"):
+def add_earnings_to_training_data(data_dir: str = "data/enriched"):
     """
     Přidá earnings features do všech training parquet souborů.
     
