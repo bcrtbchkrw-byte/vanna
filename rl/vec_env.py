@@ -95,7 +95,7 @@ def make_vec_env(
     episode_length: int = 390,
     n_envs_per_symbol: int = 1,
     use_subproc: bool = True,
-    seed: int = 42,
+    seed: int = None,  # Dynamic by default (None = use timestamp)
     normalize: bool = True
 ) -> VecNormalize:
     """
@@ -108,7 +108,7 @@ def make_vec_env(
         episode_length: Steps per episode
         n_envs_per_symbol: Number of parallel envs per symbol
         use_subproc: Use SubprocVecEnv (parallel) vs DummyVecEnv (sequential)
-        seed: Random seed
+        seed: Random seed (None = dynamic based on timestamp)
         normalize: Wrap with VecNormalize
         
     Returns:
@@ -119,6 +119,12 @@ def make_vec_env(
     
     if not symbols:
         raise ValueError(f"No symbols found with *_vanna.parquet in {data_dir}")
+    
+    # Dynamic seed if not specified (different each training run)
+    if seed is None:
+        import time
+        seed = int(time.time()) % 2**31
+        logger.info(f"Using dynamic seed for PPO environments: {seed}")
     
     logger.info(f"Creating {len(symbols)} × {n_envs_per_symbol} = {len(symbols) * n_envs_per_symbol} parallel environments")
     logger.info(f"Symbols: {symbols}")

@@ -7,7 +7,7 @@ import asyncio
 from typing import Optional, List, Dict
 from decimal import Decimal
 
-from ib_insync import Contract, Order, LimitOrder, MarketOrder, Trade, OrderStatus
+from ib_insync import Contract, Order, LimitOrder, MarketOrder, Trade, OrderStatus, TagValue
 
 from core.logger import get_logger
 from ibkr.connection import get_ibkr_connection
@@ -33,7 +33,9 @@ class IBKRExecutionClient:
         contract: Contract, 
         action: str, 
         quantity: int, 
-        limit_price: float
+        limit_price: float,
+        adaptive: bool = True,
+        priority: Optional[str] = None
     ) -> Trade:
         """
         Place a LIMIT order.
@@ -43,6 +45,8 @@ class IBKRExecutionClient:
             action: 'BUY' or 'SELL'
             quantity: Number of contracts
             limit_price: Limit price
+            adaptive: Use IBKR Adaptive Algo (default True)
+            priority: Adaptive priority ('Urgent', 'Normal', 'Patient')
             
         Returns:
             Trade object (live update wrapper)
@@ -53,11 +57,21 @@ class IBKRExecutionClient:
         await ib.qualifyContractsAsync(contract)
         
         order = LimitOrder(action, quantity, limit_price)
-        order.tif = 'GTC' # Good Till Cancelled implies durability, but maybe DAY is safer for options?
         order.tif = 'DAY' # Safer for options
         
+        if adaptive:
+            # Use config default if priority not specified
+            if not priority:
+                from config import get_config
+                priority = get_config().trading.adaptive_priority
+                
+            order.algoStrategy = 'Adaptive'
+            order.algoParams = [TagValue('adaptivePriority', priority)]
+            order.transmit = True # Ensure transmit is set
+        
         trade = ib.placeOrder(contract, order)
-        logger.info(f"📨 Order Placed: {action} {quantity} {contract.localSymbol} @ {limit_price:.2f}")
+        algo_info = f" (Adaptive/{priority})" if adaptive else ""
+        logger.info(f"📨 Order Placed: {action} {quantity} {contract.localSymbol} @ {limit_price:.2f}{algo_info}")
         
         return trade
 

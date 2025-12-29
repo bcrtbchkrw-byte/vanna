@@ -44,6 +44,7 @@ class TradingConfig:
     paper_trading: bool
     earnings_blackout_hours: int
     vix_panic_threshold: float
+    adaptive_priority: str  # 'Urgent', 'Normal', 'Patient'
 
 
 @dataclass
@@ -117,6 +118,7 @@ class Config:
             paper_trading=os.getenv('PAPER_TRADING', 'true').lower() == 'true',
             earnings_blackout_hours=int(os.getenv('EARNINGS_BLACKOUT_HOURS', '48')),
             vix_panic_threshold=float(os.getenv('VIX_PANIC_THRESHOLD', '30')),
+            adaptive_priority=os.getenv('ADAPTIVE_PRIORITY', 'Normal'),
         )
 
         self.liquidity = LiquidityConfig(

@@ -310,8 +310,16 @@ class VannaDataPipeline:
             df['date'] = pd.to_datetime(df['timestamp']).dt.date
             df = df.merge(vix_df, on='date', how='left')
             df = df.drop(columns=['date'])
+        
+        # Ensure 'vix' column exists even if merge failed or data missing from IBKR
+        if 'vix' not in df.columns:
+            logger.warning("VIX column missing after merge, using default 18.0")
+            df['vix'] = 18.0  # Safe default
         else:
-            df['vix'] = np.nan
+            # Handle NaN values explicitly
+            if df['vix'].isnull().all():
+                 df['vix'] = 18.0
+
         
         # VIX3M
         vix3m_df = await self.fetch_historical_daily('VIX3M', years=10)

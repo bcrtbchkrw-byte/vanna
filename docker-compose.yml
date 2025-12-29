@@ -69,3 +69,23 @@ services:
       - ./logs:/app/logs
       - ./data:/app/data
       - .:/app
+
+  # ==========================================================================
+  # Streamlit Dashboard
+  # ==========================================================================
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vanna-dashboard
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=Europe/Prague
+      - IBKR_HOST=127.0.0.1
+      - IBKR_PORT=4002
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - .:/app
+    command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0

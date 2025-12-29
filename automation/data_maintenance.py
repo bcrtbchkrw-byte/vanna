@@ -22,6 +22,7 @@ from ml.vanna_data_pipeline import get_vanna_pipeline
 from ml.data_storage import get_data_storage
 
 logger = get_logger()
+from ibkr.connection import get_ibkr_connection
 
 
 class DataMaintenanceManager:
@@ -229,7 +230,16 @@ class DataMaintenanceManager:
         
         for i in range(1, len(df)):
             prev_ts = pd.to_datetime(df.loc[i-1, 'timestamp'])
+            if prev_ts.tzinfo is not None:
+                prev_ts = prev_ts.replace(tzinfo=None)
+            # Normalize to floor of minute (ignore seconds/milliseconds)
+            prev_ts = prev_ts.floor('min')
+                
             curr_ts = pd.to_datetime(df.loc[i, 'timestamp'])
+            if curr_ts.tzinfo is not None:
+                curr_ts = curr_ts.replace(tzinfo=None)
+            # Normalize to floor of minute (ignore seconds/milliseconds)
+            curr_ts = curr_ts.floor('min')
             
             gap_minutes = (curr_ts - prev_ts).total_seconds() / 60
             
@@ -237,10 +247,13 @@ class DataMaintenanceManager:
             # Overnight gaps are expected
             if gap_minutes > max_gap_minutes:
                 # Check if it's an overnight gap (market closed)
+                # Check if it's an overnight gap (market closed)
+                # Přesnější detekce tržních hodin (9:30 - 16:00)
                 is_overnight = (
-                    prev_ts.hour >= 16 or  # After market close
-                    curr_ts.hour < 9 or    # Before market open
-                    (prev_ts.hour >= 16 and curr_ts.date() > prev_ts.date())  # Next day
+                    (prev_ts.hour >= 16) or  # Po zavření
+                    (curr_ts.hour < 9) or    # Před otevřením
+                    (curr_ts.hour == 9 and curr_ts.minute < 30) or # Před 9:30
+                    (prev_ts.date() != curr_ts.date()) # Mezera mezi dny
                 )
                 
                 # Weekend gap
@@ -309,6 +322,12 @@ class DataMaintenanceManager:
             if existing_df is None or len(existing_df) == 0:
                 # No existing data, download full history
                 logger.info(f"   Downloading full 10-year daily data for {symbol}...")
+                
+                # Ensure connection
+                conn = await get_ibkr_connection()
+                if not conn.is_connected:
+                    await conn.connect()
+                
                 daily_df = await self.pipeline.fetch_historical_daily(symbol, years=10)
                 if daily_df is not None:
                     daily_df = await self.pipeline.fetch_vix_daily(daily_df)
@@ -332,10 +351,18 @@ class DataMaintenanceManager:
             logger.info(f"   Fetching {days_missing} days of daily data for {symbol}...")
             
             # Fetch recent daily data (last 30 days to be safe)
+            # Ensure connection
+            conn = await get_ibkr_connection()
+            if not conn.is_connected:
+                await conn.connect()
+                
             new_df = await self.pipeline.fetch_historical_daily(symbol, years=1)
             
             if new_df is None or len(new_df) == 0:
                 return False
+            
+            # Fetch VIX for new data BEFORE merging to avoid schema mismatch
+            new_df = await self.pipeline.fetch_vix_daily(new_df)
             
             # Merge with existing
             new_df['timestamp'] = pd.to_datetime(new_df['timestamp'])
@@ -343,8 +370,8 @@ class DataMaintenanceManager:
             merged_df = merged_df.drop_duplicates(subset=['timestamp'], keep='last')
             merged_df = merged_df.sort_values('timestamp').reset_index(drop=True)
             
-            # Re-apply VIX and features
-            merged_df = await self.pipeline.fetch_vix_daily(merged_df)
+            # Re-apply features (VIX is already present)
+            # merged_df = await self.pipeline.fetch_vix_daily(merged_df)
             merged_df = self.pipeline.feature_eng.process_all_features(merged_df)
             
             # Save
@@ -381,6 +408,16 @@ class DataMaintenanceManager:
                 start = gap['start']
                 end = gap['end']
                 
+                # Ensure start/end are naive for comparison
+                if start.tzinfo is not None: start = start.replace(tzinfo=None)
+                if end.tzinfo is not None: end = end.replace(tzinfo=None)
+                
+                # Convert pandas Timestamp to Python datetime for IBKR and comparison
+                if hasattr(start, 'to_pydatetime'):
+                    start = start.to_pydatetime()
+                if hasattr(end, 'to_pydatetime'):
+                    end = end.to_pydatetime()
+                
                 logger.info(f"🔧 Patching {symbol} gap: {start} to {end} ({gap['gap_minutes']:.0f} min)")
                 
                 # Calculate days to fetch
@@ -388,6 +425,11 @@ class DataMaintenanceManager:
                 
                 # Fetch missing data
                 conn = await self.pipeline._get_connection()
+                if not conn.is_connected:
+                    logger.info("   🔌 Connecting to IBKR for patching...")
+                    if not await conn.connect():
+                        logger.error("IBKR not connected, cannot patch")
+                        continue
                 if not conn or not conn.is_connected:
                     logger.error("IBKR not connected, cannot patch")
                     continue
@@ -399,6 +441,7 @@ class DataMaintenanceManager:
                 await ib.qualifyContractsAsync(contract)
                 
                 # Fetch bars for the gap period
+                # end is already a Python datetime (converted above)
                 bars = await ib.reqHistoricalDataAsync(
                     contract,
                     endDateTime=end + timedelta(hours=1),
@@ -422,6 +465,11 @@ class DataMaintenanceManager:
                     } for bar in bars])
                     
                     patch_df['timestamp'] = pd.to_datetime(patch_df['timestamp'])
+                    
+                    # Ensure naive timestamp (local time) to match database/gap timestamps
+                    if patch_df['timestamp'].dt.tz is not None:
+                        patch_df['timestamp'] = patch_df['timestamp'].dt.tz_localize(None)
+                        
                     patch_df = patch_df[
                         (patch_df['timestamp'] > start) & 
                         (patch_df['timestamp'] < end)
@@ -463,6 +511,17 @@ class DataMaintenanceManager:
         logger.info(f"📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         logger.info("=" * 60)
         
+        # Ensure connection at start of maintenance
+        try:
+            conn = await get_ibkr_connection()
+            if not conn.is_connected:
+                logger.info("🔌 Ensuring IBKR connection for maintenance...")
+                await conn.connect()
+        except Exception as e:
+            logger.error(f"Failed to connect to IBKR: {e}")
+            # Continue anyway, let individual steps try or fail
+        
+        
         results = {
             'symbols_checked': 0,
             'total_gaps_found': 0,
@@ -483,6 +542,12 @@ class DataMaintenanceManager:
                 
                 if df_1min is None or len(df_1min) == 0:
                     logger.warning(f"   No 1min data for {symbol}, downloading full history...")
+                    
+                    # Ensure connection
+                    conn = await get_ibkr_connection()
+                    if not conn.is_connected:
+                        await conn.connect()
+                        
                     await self.pipeline.process_historical_data(symbol, days=550, save=True)
                 else:
                     # Find gaps in 1min
@@ -534,6 +599,20 @@ class DataMaintenanceManager:
             logger.warning(f"   Errors: {len(results['errors'])}")
         logger.info("=" * 60)
         
+        # ============================================
+        # 3. Collect Options Open Interest (OI) data
+        # ============================================
+        try:
+            from ml.oi_collector import collect_daily_oi
+            
+            logger.info("\n📊 Collecting Options Open Interest data...")
+            oi_results = await collect_daily_oi(self.SYMBOLS)
+            results['oi_collected'] = sum(oi_results.values())
+            logger.info(f"   ✅ OI collected for {results['oi_collected']}/{len(self.SYMBOLS)} symbols")
+        except Exception as e:
+            logger.warning(f"   ⚠️ OI collection failed: {e}")
+            results['oi_collected'] = 0
+        
         return results
     
     async def merge_live_to_parquet(self) -> Dict[str, int]:
@@ -551,7 +630,6 @@ class DataMaintenanceManager:
             Dict with merge statistics per symbol
         """
         import sqlite3
-        from ml.vectorized_greeks import VectorizedGreeksCalculator
         
         logger.info("=" * 60)
         logger.info("🔄 Merging Live Data to Parquet")
@@ -598,6 +676,16 @@ class DataMaintenanceManager:
                 else:
                     existing_df = pd.DataFrame()
                     logger.info(f"   No existing parquet, creating new")
+                
+                # ================================================================
+                # CRITICAL: Normalize timestamps to floor of minute
+                # Live data has milliseconds (13:31:51.948287), historical has clean minutes
+                # This prevents false gap detection and duplicate issues
+                # ================================================================
+                live_df['timestamp'] = live_df['timestamp'].dt.floor('min')
+                if not existing_df.empty:
+                    existing_df['timestamp'] = existing_df['timestamp'].dt.floor('min')
+                    logger.info(f"   ⏱️ Normalized timestamps to minute precision")
                 
                 # 3. Merge and deduplicate
                 if not existing_df.empty:
@@ -686,10 +774,11 @@ class DataMaintenanceManager:
     
     async def _recalculate_vanna_parquet(self):
         """Recalculate Greeks for all *_1min.parquet files."""
-        from ml.vectorized_greeks import VectorizedGreeksCalculator
+        from greeks.greeks_engine import GreeksEngine
+        import pandas as pd
         
         logger.info("📐 Recalculating Greeks...")
-        calculator = VectorizedGreeksCalculator()
+        engine = GreeksEngine()
         
         for symbol in self.SYMBOLS:
             input_path = self.storage.data_dir / f"{symbol}_1min.parquet"
@@ -699,7 +788,23 @@ class DataMaintenanceManager:
                 continue
             
             try:
-                calculator.process_parquet_file(str(input_path), str(output_path))
+                df = pd.read_parquet(input_path)
+                
+                # Prepare columns for greeks_engine API
+                if 'close' in df.columns:
+                    df['option_price'] = df['close']
+                if 'underlying_price' not in df.columns and 'close' in df.columns:
+                    df['underlying_price'] = df['close']
+                if 'dte' not in df.columns:
+                    df['dte'] = 30
+                if 'is_call' not in df.columns:
+                    df['is_call'] = True
+                if 'strike' not in df.columns and 'close' in df.columns:
+                    df['strike'] = df['close'] * 1.05
+                
+                df = engine.process_dataframe(df, symbol=symbol)
+                df.to_parquet(output_path, index=False, compression='snappy')
+                
                 logger.info(f"   ✅ {symbol}_1min_vanna.parquet updated")
             except Exception as e:
                 logger.error(f"   ❌ Error calculating Greeks for {symbol}: {e}")

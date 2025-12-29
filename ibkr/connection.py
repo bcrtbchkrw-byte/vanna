@@ -58,6 +58,9 @@ class IBKRConnection:
         
         # Circuit breaker for connection resilience
         self._circuit_breaker = get_ibkr_circuit_breaker()
+        
+        # Track last error for recovery logic
+        self._latest_error_code = 0
     
     @property
     def is_connected(self) -> bool:
@@ -89,6 +92,9 @@ class IBKRConnection:
         self._ib.errorEvent += self._on_error
         
         for attempt in range(1, self._max_retries + 1):
+            # Reset error code for this attempt
+            self._latest_error_code = 0
+            
             try:
                 logger.info(f"🔌 Connecting to IBKR (Attempt {attempt}/{self._max_retries})...")
                 logger.info(f"   Target: {self.host}:{self.port} (Client ID: {self.client_id})")
@@ -122,6 +128,15 @@ class IBKRConnection:
                 logger.warning(f"🚫 Connection refused (attempt {attempt})")
             except Exception as e:
                 logger.warning(f"❌ Connection error: {type(e).__name__}: {e}")
+            
+            # Check for Client ID conflict (Error 326)
+            if self._latest_error_code == 326:
+                logger.warning(f"⚠️ Client ID {self.client_id} is already in use!")
+                self.client_id += 1
+                logger.info(f"🔄 Switching to Client ID {self.client_id} and retrying immediately...")
+                # Reduce wait time for ID conflicts to fast-fail/fast-recover
+                await asyncio.sleep(1)
+                continue
             
             # Exponential backoff
             if attempt < self._max_retries:
@@ -157,6 +172,9 @@ class IBKRConnection:
     
     def _on_error(self, reqId: int, errorCode: int, errorString: str, contract) -> None:
         """Handle error events."""
+        # Capture error code for logic
+        self._latest_error_code = errorCode
+        
         # Ignore non-critical errors
         ignored_codes = [
             2104, 2106, 2108, 2158,  # Market data farm messages

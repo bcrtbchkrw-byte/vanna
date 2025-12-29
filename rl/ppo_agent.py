@@ -29,20 +29,21 @@ class TradingAgent:
     """
     PPO-based trading agent using stable-baselines3.
     
-    Actions:
-    0 = HOLD (Do nothing)
-    1 = OPEN (Enter Long)
-    2 = CLOSE (Exit Long)
-    3 = INCREASE (Scale In)
-    4 = DECREASE (Scale Out)
+    Multi-Discrete Action Space:
+    [direction, option_type, side, dte_bucket]
+    
+    direction: 0=HOLD, 1=OPEN, 2=CLOSE
+    option_type: 0=CALL, 1=PUT
+    side: 0=BUY (long), 1=SELL (short)
+    dte_bucket: 0=0DTE, 1=WEEKLY, 2=MONTHLY
     """
     
     def __init__(
         self,
         model_path: str = "data/models/ppo_trading_agent",
         learning_rate: float = 1e-4,      # Reduced from 3e-4 for stability in noisy data
-        n_steps: int = 2048,               # Unchanged - collect enough experience
-        batch_size: int = 256,             # REDUCED from 512 for RPi 5 (was causing 99% CPU) 5 (was causing 99% CPU)
+        n_steps: int = 1024,               # REDUCED from 2048 for RPi 5 stability
+        batch_size: int = 512,             # INCREASED from 256 for smoother gradients
         n_epochs: int = 10,                # Unchanged
         gamma: float = 0.99,               # Unchanged - discount factor
         gae_lambda: float = 0.95,          # NEW - smooth advantage estimates
@@ -183,38 +184,80 @@ class TradingAgent:
             "model_path": str(self.model_path)
         }
     
-    def predict(self, obs: np.ndarray, deterministic: bool = True) -> int:
-        """Predict action for given observation."""
+    # Action decoding maps
+    DIRECTION_MAP = ['HOLD', 'OPEN', 'CLOSE']
+    OPTION_TYPE_MAP = ['CALL', 'PUT']
+    SIDE_MAP = ['BUY', 'SELL']
+    DTE_BUCKET_MAP = ['0DTE', 'WEEKLY', 'MONTHLY']
+    
+    def predict(self, obs: np.ndarray, deterministic: bool = True) -> dict:
+        """Predict action for given observation.
+        
+        Returns:
+            dict with keys: direction, option_type, side, dte_bucket, raw_action
+        """
         if self.model is None:
             self.load()
         
         action, _ = self.model.predict(obs, deterministic=deterministic)
-        return int(action)
+        
+        # Multi-Discrete: action is [direction, opt_type, side, dte_bucket]
+        return {
+            'direction': self.DIRECTION_MAP[action[0]],
+            'option_type': self.OPTION_TYPE_MAP[action[1]],
+            'side': self.SIDE_MAP[action[2]],
+            'dte_bucket': self.DTE_BUCKET_MAP[action[3]],
+            'raw_action': action
+        }
 
-    def predict_with_confidence(self, obs: np.ndarray, deterministic: bool = True) -> tuple[int, float]:
-        """Predict action with confidence score."""
+    def predict_with_confidence(self, obs: np.ndarray, deterministic: bool = True) -> tuple[dict, float]:
+        """Predict action with confidence score.
+        
+        Returns:
+            (action_dict, confidence) where action_dict has direction, option_type, side, dte_bucket
+        """
         if self.model is None:
             self.load()
             
         # Get action - cast to float32 to prevent binary incompatibility
         obs_f32 = obs.astype(np.float32)
         action, _ = self.model.predict(obs_f32, deterministic=deterministic)
-        action_int = int(action)
+        
+        # Decode Multi-Discrete action
+        action_dict = {
+            'direction': self.DIRECTION_MAP[action[0]],
+            'option_type': self.OPTION_TYPE_MAP[action[1]],
+            'side': self.SIDE_MAP[action[2]],
+            'dte_bucket': self.DTE_BUCKET_MAP[action[3]],
+            'raw_action': action
+        }
         
         try:
-            # Get probabilities from policy
+            # Get probabilities from policy (average across all sub-distributions)
             import torch
             with torch.no_grad():
                 obs_tensor = self.model.policy.obs_to_tensor(obs_f32)[0]
                 distribution = self.model.policy.get_distribution(obs_tensor)
-                probs = distribution.distribution.probs
                 
-                # Get probability of selected action
-                confidence = float(probs[0][action_int].item())
-                return action_int, confidence
+                # Multi-Discrete: distribution has multiple sub-distributions
+                # Get confidence as product of individual action probabilities
+                if hasattr(distribution.distribution, 'distributions'):
+                    # MultiCategorical distribution
+                    confidences = []
+                    for i, dist in enumerate(distribution.distribution.distributions):
+                        prob = dist.probs[0][action[i]].item()
+                        confidences.append(prob)
+                    # Joint probability
+                    confidence = float(np.prod(confidences))
+                else:
+                    # Fallback for single distribution
+                    probs = distribution.distribution.probs
+                    confidence = float(probs[0].max().item())
+                    
+                return action_dict, confidence
         except Exception as e:
             logger.warning(f"Could not get confidence: {e}")
-            return action_int, 0.0
+            return action_dict, 0.5  # Default to 50% confidence
 
     
     def save(self):

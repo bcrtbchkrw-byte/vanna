@@ -78,10 +78,9 @@ class TradeSuccessPredictor:
         'charm',
         'volga',
         
-        # Open Interest (3 NEW features)
-        'total_call_oi',         # Total Call Open Interest (normalized)
-        'total_put_oi',          # Total Put Open Interest (normalized)
-        'put_call_oi_ratio',     # Put OI / Call OI
+        # NOTE: Removed total_call_oi, total_put_oi, put_call_oi_ratio
+        # These were hardcoded placeholders (100000.0), not real data
+        # TODO: Implement real OI data fetching from IBKR
     ]
     
     def __init__(self, model_path: str = "data/models/trade_success_predictor.pkl"):
@@ -173,9 +172,13 @@ class TradeSuccessPredictor:
         logger.info(f"   Features: {len(available_features)}")
         logger.info(f"   Target distribution: {y.value_counts().to_dict()}")
         
-        # Split
+        # Split with dynamic seed (different each training run)
+        import time
+        dynamic_seed = int(time.time()) % 2**31  # Use current timestamp as seed
+        logger.info(f"   Using dynamic random seed: {dynamic_seed}")
+        
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=42, stratify=y
+            X, y, test_size=test_size, random_state=dynamic_seed, stratify=y
         )
         
         # Scale features
@@ -198,7 +201,7 @@ class TradeSuccessPredictor:
             objective='binary:logistic',
             scale_pos_weight=scale_pos_weight,  # Handle imbalance
             eval_metric='logloss',
-            random_state=42,
+            random_state=dynamic_seed,  # Dynamic seed for different trees each run
             n_jobs=-1
         )
         
